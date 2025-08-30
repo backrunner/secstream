@@ -138,6 +138,26 @@ export class SecureAudioPlayer extends EventTarget {
   }
 
   /**
+   * Get buffer statistics for monitoring
+   */
+  getBufferStats(): { bufferSize: number; newRequests?: number } {
+    // Count how many slices are currently loaded in buffer
+    const sessionInfo = this.client.getSessionInfo();
+    if (!sessionInfo) {
+      return { bufferSize: 0 };
+    }
+
+    let bufferSize = 0;
+    for (let i = 0; i < sessionInfo.totalSlices; i++) {
+      if (this.client.isSliceAvailable(i)) {
+        bufferSize++;
+      }
+    }
+
+    return { bufferSize };
+  }
+
+  /**
    * Get current playback time in seconds
    */
   private getCurrentTime(): number {
@@ -167,6 +187,16 @@ export class SecureAudioPlayer extends EventTarget {
       throw new Error(`Slice ${this._currentSliceIndex} not loaded`);
     }
 
+    // Stop any existing audio source to prevent overlapping playback
+    if (this.currentSource) {
+      try {
+        this.currentSource.stop();
+      } catch {
+        // Ignore errors from stopping already-stopped sources
+      }
+      this.currentSource = null;
+    }
+
     // Create new audio source
     this.currentSource = this.audioContext.createBufferSource();
     this.currentSource.buffer = sliceData.audioBuffer;
@@ -178,7 +208,7 @@ export class SecureAudioPlayer extends EventTarget {
     };
 
     // Start playback
-    const startOffset = this._isPaused ? (this._pausedAt - this._playbackStartTime) : 0;
+    const startOffset = this._isPaused ? Math.max(0, this._pausedAt - this._playbackStartTime) : 0;
     this.currentSource.start(0, startOffset);
 
     this._isPlaying = true;

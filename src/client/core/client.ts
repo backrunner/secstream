@@ -129,10 +129,10 @@ export class SecureAudioClient {
       }
     });
 
-    // Convert to AudioBuffer with retry
+    // Convert raw PCM data to AudioBuffer with retry
     const audioBuffer = await this.retryManager.retry(async() => {
       try {
-        return await this.audioContext.decodeAudioData(audioData);
+        return this.createAudioBufferFromPCM(audioData, this.sessionInfo!);
       } catch(error) {
         throw new DecodingError(`Failed to decode slice ${sliceId}`, error as Error);
       }
@@ -229,6 +229,58 @@ export class SecureAudioClient {
         this.playedSlices.delete(sequence);
       }
     }
+  }
+
+  /**
+   * Create AudioBuffer from raw PCM data
+   */
+  private createAudioBufferFromPCM(pcmData: ArrayBuffer, sessionInfo: SessionInfo): AudioBuffer {
+    const sampleRate = sessionInfo.sampleRate;
+    const channels = sessionInfo.channels;
+    const bitDepth = sessionInfo.bitDepth || 16;
+    
+    // Calculate number of samples per channel
+    const bytesPerSample = bitDepth / 8;
+    const frameSize = channels * bytesPerSample;
+    const totalFrames = pcmData.byteLength / frameSize;
+    
+    // Create AudioBuffer
+    const audioBuffer = this.audioContext.createBuffer(channels, totalFrames, sampleRate);
+    
+    // Convert PCM data to float32 arrays for each channel
+    const dataView = new DataView(pcmData);
+    
+    for (let channel = 0; channel < channels; channel++) {
+      const channelData = audioBuffer.getChannelData(channel);
+      
+      for (let frame = 0; frame < totalFrames; frame++) {
+        const byteOffset = frame * frameSize + channel * bytesPerSample;
+        
+        let sample: number;
+        if (bitDepth === 16) {
+          // 16-bit signed PCM
+          sample = dataView.getInt16(byteOffset, true) / 32768.0;
+        } else if (bitDepth === 24) {
+          // 24-bit signed PCM (stored as 3 bytes)
+          const byte1 = dataView.getUint8(byteOffset);
+          const byte2 = dataView.getUint8(byteOffset + 1);
+          const byte3 = dataView.getUint8(byteOffset + 2);
+          const intVal = (byte3 << 16) | (byte2 << 8) | byte1;
+          // Convert from unsigned to signed
+          sample = (intVal > 0x7FFFFF ? intVal - 0x1000000 : intVal) / 8388608.0;
+        } else if (bitDepth === 32) {
+          // 32-bit signed PCM
+          sample = dataView.getInt32(byteOffset, true) / 2147483648.0;
+        } else {
+          // Default to 16-bit if unsupported bit depth
+          sample = dataView.getInt16(byteOffset, true) / 32768.0;
+        }
+        
+        channelData[frame] = sample;
+      }
+    }
+    
+    return audioBuffer;
   }
 
   // Mark a slice as played for cleanup purposes

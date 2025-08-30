@@ -32,14 +32,14 @@ initCrc32Table();
 export function calculateCrc32(data: ArrayBuffer): string {
   const bytes = new Uint8Array(data);
   let crc = 0xFFFFFFFF;
-  
+
   for (let i = 0; i < bytes.length; i++) {
     const byte = bytes[i];
     crc = (crc >>> 8) ^ crc32Table[(crc ^ byte) & 0xFF];
   }
-  
+
   crc = (crc ^ 0xFFFFFFFF) >>> 0; // Convert to unsigned 32-bit
-  
+
   // Convert to hex string with proper padding
   return crc.toString(16).padStart(8, '0');
 }
@@ -67,7 +67,7 @@ export function calculateSliceCrc32(encryptedData: ArrayBuffer, iv: ArrayBuffer)
   const combined = new Uint8Array(encryptedData.byteLength + iv.byteLength);
   combined.set(new Uint8Array(encryptedData), 0);
   combined.set(new Uint8Array(iv), encryptedData.byteLength);
-  
+
   return calculateCrc32(combined.buffer);
 }
 
@@ -79,8 +79,8 @@ export function calculateSliceCrc32(encryptedData: ArrayBuffer, iv: ArrayBuffer)
  * @returns True if hashes match
  */
 export function verifySliceCrc32(
-  encryptedData: ArrayBuffer, 
-  iv: ArrayBuffer, 
+  encryptedData: ArrayBuffer,
+  iv: ArrayBuffer,
   expectedHash: string,
 ): boolean {
   const actualHash = calculateSliceCrc32(encryptedData, iv);

@@ -1,4 +1,5 @@
-import type { Transport, EncryptedSlice, KeyExchangeRequest, KeyExchangeResponse, SessionInfo } from '../dist/client/index.js';
+import type { Transport } from '../src/client/network/transport.js';
+import type { EncryptedSlice, KeyExchangeRequest, KeyExchangeResponse, SessionInfo } from '../src/shared/types/interfaces.js';
 import { verifySliceCrc32 } from './utils/crc32.js';
 
 /**

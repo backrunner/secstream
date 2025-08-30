@@ -16,6 +16,7 @@ export interface SessionInfo {
   sliceDuration: number;
   sampleRate: number;
   channels: number;
+  bitDepth?: number;
 }
 
 export interface KeyExchangeRequest {

@@ -16,7 +16,13 @@ app.use('*', cors());
 
 // Serve static files from public directory
 app.use('/public/*', serveStatic({ root: './' }));
-app.use('/*', serveStatic({ 
+// Serve root dist files from parent directory (SecStream client library)
+app.use('/dist/client/*', serveStatic({ root: '../' }));
+app.use('/dist/shared/*', serveStatic({ root: '../' }));
+// Serve demo dist files from current directory
+app.use('/dist/demo-transport.js', serveStatic({ root: './' }));
+app.use('/dist/utils/*', serveStatic({ root: './' }));
+app.use('/*', serveStatic({
   root: './public',
   rewriteRequestPath: (path) => path.replace(/^\//, ''),
 }));
@@ -30,23 +36,37 @@ const sessionManager = new SessionManager({
 // API Routes
 app.post('/api/sessions', async (c) => {
   try {
+    console.log('📥 Received session creation request');
     const formData = await c.req.formData();
+    console.log('📋 Form data keys:', Array.from(formData.keys()));
+
     const audioFile = formData.get('audio') as File;
-    
+
     if (!audioFile) {
+      console.error('❌ No audio file provided in request');
       return c.json({ error: 'No audio file provided' }, 400);
     }
 
+    console.log('📁 Audio file details:', {
+      name: audioFile.name,
+      size: audioFile.size,
+      type: audioFile.type
+    });
+
     const audioBuffer = await audioFile.arrayBuffer();
-    
+    console.log('📊 Audio buffer size:', audioBuffer.byteLength);
+
     // Detect audio format
+    console.log('🔍 Detecting audio format...');
     const metadata = parseAudioMetadata(audioBuffer);
     console.log(`📄 Detected format: ${metadata.format}, Sample rate: ${metadata.sampleRate}Hz, Channels: ${metadata.channels}`);
-    
+
     // Create session
+    console.log('🏗️ Creating session with SessionManager...');
     const sessionId = await sessionManager.createSession(audioBuffer);
-    
-    return c.json({
+    console.log('✅ Session created successfully:', sessionId);
+
+    const response = {
       sessionId,
       metadata: {
         format: metadata.format,
@@ -55,10 +75,25 @@ app.post('/api/sessions', async (c) => {
         duration: metadata.duration,
       },
       message: 'Session created successfully',
-    });
-  } catch (error) {
+    };
+
+    console.log('📤 Sending successful response:', response);
+    return c.json(response);
+  } catch (error: unknown) {
     console.error('❌ Session creation error:', error);
-    return c.json({ error: 'Failed to create session' }, 500);
+    console.error('❌ Error details:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : 'Unknown stack',
+      name: error instanceof Error ? error.name : 'Unknown error'
+    });
+
+    const errorResponse = {
+      error: 'Failed to create session',
+      details: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString()
+    };
+    console.error('📤 Sending error response:', errorResponse);
+    return c.json(errorResponse, 500);
   }
 });
 
@@ -66,10 +101,10 @@ app.post('/api/sessions/:sessionId/key-exchange', async (c) => {
   try {
     const sessionId = c.req.param('sessionId');
     const keyExchangeRequest = await c.req.json();
-    
+
     console.log(`🔑 Key exchange for session: ${sessionId}`);
     const response = await sessionManager.handleKeyExchange(sessionId, keyExchangeRequest);
-    
+
     return c.json(response);
   } catch (error) {
     console.error('❌ Key exchange error:', error);
@@ -81,11 +116,11 @@ app.get('/api/sessions/:sessionId/info', async (c) => {
   try {
     const sessionId = c.req.param('sessionId');
     const info = sessionManager.getSessionInfo(sessionId);
-    
+
     if (!info) {
       return c.json({ error: 'Session not found' }, 404);
     }
-    
+
     return c.json(info);
   } catch (error) {
     console.error('❌ Get session info error:', error);
@@ -97,21 +132,21 @@ app.get('/api/sessions/:sessionId/slices/:sliceId', async (c) => {
   try {
     const sessionId = c.req.param('sessionId');
     const sliceId = c.req.param('sliceId');
-    
+
     const slice = await sessionManager.getSlice(sessionId, sliceId);
-    
+
     if (!slice) {
       return c.json({ error: 'Slice not found' }, 404);
     }
-    
+
     // Calculate CRC32 hash for integrity checking
     const crc32Hash = calculateSliceCrc32(slice.encryptedData, slice.iv);
-    
+
     // Combine encrypted data and IV into single binary payload
     const combinedData = new Uint8Array(slice.encryptedData.byteLength + slice.iv.byteLength);
     combinedData.set(new Uint8Array(slice.encryptedData), 0);
     combinedData.set(new Uint8Array(slice.iv), slice.encryptedData.byteLength);
-    
+
     // Set metadata in HTTP headers
     c.header('X-Slice-ID', slice.id);
     c.header('X-Slice-Sequence', slice.sequence.toString());
@@ -120,9 +155,9 @@ app.get('/api/sessions/:sessionId/slices/:sliceId', async (c) => {
     c.header('X-IV-Length', slice.iv.byteLength.toString());
     c.header('X-CRC32-Hash', crc32Hash);
     c.header('Content-Type', 'application/octet-stream');
-    
+
     console.log(`🔐 Serving binary slice: ${sliceId}, size: ${combinedData.byteLength} bytes, hash: ${crc32Hash}`);
-    
+
     // Return pure binary data
     return new Response(combinedData.buffer);
   } catch (error) {
@@ -171,7 +206,7 @@ app.notFound((c) => {
     available_endpoints: [
       'GET /',
       'POST /api/sessions',
-      'POST /api/sessions/:sessionId/key-exchange', 
+      'POST /api/sessions/:sessionId/key-exchange',
       'GET /api/sessions/:sessionId/info',
       'GET /api/sessions/:sessionId/slices/:sliceId',
       'GET /api/stats',
@@ -204,6 +239,6 @@ serve({
 console.log(`✅ Server running on http://localhost:${port}`);
 console.log('📋 Endpoints:');
 console.log('  GET  /              - Demo page');
-console.log('  POST /api/sessions  - Create session'); 
+console.log('  POST /api/sessions  - Create session');
 console.log('  GET  /api/stats     - Server statistics');
 console.log('  GET  /health        - Health check');

@@ -51,6 +51,7 @@ export class AudioProcessor {
       sliceDuration: this.config.sliceDurationMs,
       sampleRate: audioSource.sampleRate,
       channels: audioSource.channels,
+      bitDepth: audioSource.metadata.bitDepth || 16,
     };
 
     // Don't pre-process all slices - create them on-demand for fast startup
