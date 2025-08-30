@@ -1,9 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
-    "lib": ["ESNext", "dom"],
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
     "module": "ESNext",
     "moduleResolution": "node",
     "resolveJsonModule": true,
@@ -13,14 +11,17 @@
     "noImplicitAny": true,
     "noImplicitThis": true,
     "declaration": true,
-    "declarationDir": "dist/types",
+    "declarationMap": true,
     "importHelpers": true,
-    "outDir": "dist/lib",
-    "removeComments": true,
+    "noEmitOnError": true,
+    "outDir": "dist",
+    "removeComments": false,
+    "sourceMap": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "tests", "examples"]
 }

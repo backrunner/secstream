@@ -22,4 +22,13 @@ export default antfu({
     'style/object-curly-spacing': ['error', 'always'],
     'style/array-bracket-spacing': ['error', 'never'],
   },
+  ignores: [
+    'demo/**/*',
+    'dist/**/*',
+    'node_modules/**/*',
+    'coverage/**/*',
+    'build/**/*',
+    '*.md',
+    '*.json',
+  ],
 });

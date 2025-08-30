@@ -1,36 +1,52 @@
 {
-  "name": "audio-secure-transfer",
+  "name": "secstream",
   "type": "module",
   "version": "0.1.0",
-  "description": "Transfer audio from server to client via secure tunnel",
+  "packageManager": "pnpm@10.15.0",
+  "description": "Secure audio streaming library with client/server components",
   "author": "BackRunner",
   "license": "MIT",
-  "main": "dist/audio-secure-transfer.umd.js",
-  "module": "dist/audio-secure-transfer.esm.js",
-  "typings": "dist/types/main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=9.0.0"
+  },
   "scripts": {
-    "watch": "cross-env NODE_ENV=dev rollup -c rollup.config.ts --configPlugin typescript -w",
-    "build": "rimraf ./dist && tsc && cross-env NODE_ENV=production rollup -c rollup.config.ts --configPlugin typescript && rimraf ./dist/lib",
+    "dev": "vitest",
+    "build": "rimraf ./dist && tsc",
+    "test": "vitest run",
     "lint": "eslint ./src/**/*",
     "lint:fix": "eslint ./src/**/* --fix"
   },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
   "devDependencies": {
     "@antfu/eslint-config": "^4.19.0",
-    "@rollup/plugin-commonjs": "^26.0.3",
-    "@rollup/plugin-json": "^6.1.0",
-    "@rollup/plugin-node-resolve": "^15.3.1",
-    "@rollup/plugin-terser": "^0.4.4",
-    "@rollup/plugin-typescript": "^11.1.6",
     "@types/node": "^24.1.0",
-    "cross-env": "^7.0.3",
+    "@types/web": "^0.0.166",
     "eslint": "^9.31.0",
     "rimraf": "^6.0.1",
-    "rollup": "^4.45.1",
-    "rollup-plugin-filesize": "^10.0.0",
     "tslib": "^2.8.1",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^2.0.0"
   }
 }
