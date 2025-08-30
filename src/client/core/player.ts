@@ -28,6 +28,8 @@ export class SecureAudioPlayer extends EventTarget {
   private _sliceStartTime = 0;
   private _pausedAt = 0;
   private _playbackStartTime = 0;
+  private _sliceOffsetSeconds = 0; // Offset within the current slice for precise seeking
+  private _progressTimer: number | null = null;
 
   constructor(client: SecureAudioClient) {
     super();
@@ -57,6 +59,9 @@ export class SecureAudioPlayer extends EventTarget {
     }
 
     await this.playCurrentSlice();
+
+    // Start realtime progress updates
+    this.startProgressUpdates();
   }
 
   /**
@@ -74,6 +79,9 @@ export class SecureAudioPlayer extends EventTarget {
       this.currentSource.stop();
       this.currentSource = null;
     }
+
+    // Stop progress updates
+    this.stopProgressUpdates();
 
     this.dispatchEvent(new CustomEvent('pause'));
   }
@@ -94,7 +102,133 @@ export class SecureAudioPlayer extends EventTarget {
       this.currentSource = null;
     }
 
+    // Stop progress updates
+    this.stopProgressUpdates();
+
     this.dispatchEvent(new CustomEvent('stop'));
+  }
+
+  /**
+   * Seek to specific time position with on-demand slice loading
+   * @param timeSeconds - The target time position in seconds
+   * @param autoResume - Optional. If true, automatically resume playback if it was playing before seeking
+   */
+  async seekToTime(timeSeconds: number, autoResume: boolean = true): Promise<void> {
+    const sessionInfo = this.client.getSessionInfo();
+    if (!sessionInfo) {
+      throw new Error('No session initialized');
+    }
+
+    const totalDuration = (sessionInfo.totalSlices * sessionInfo.sliceDuration) / 1000;
+    if (timeSeconds < 0 || timeSeconds > totalDuration) {
+      throw new Error(`Invalid seek time: ${timeSeconds}. Must be between 0 and ${totalDuration}`);
+    }
+
+    // Calculate which slice contains this time and the offset within that slice
+    const sliceDurationSeconds = sessionInfo.sliceDuration / 1000;
+    const targetSliceIndex = Math.floor(timeSeconds / sliceDurationSeconds);
+    const offsetWithinSlice = timeSeconds - (targetSliceIndex * sliceDurationSeconds);
+
+    const wasPlaying = this._isPlaying;
+
+    // Always pause when seeking
+    if (this._isPlaying) {
+      this.pause();
+    }
+
+    try {
+      // Ensure target slice is loaded with retry mechanism
+      await this.ensureSliceLoadedWithRetry(targetSliceIndex);
+
+      // Update player state
+      this._currentSliceIndex = targetSliceIndex;
+      this._pausedAt = 0;
+      this._sliceStartTime = 0;
+      this._playbackStartTime = 0;
+
+      // Set the offset within the slice for precise positioning
+      this._sliceOffsetSeconds = offsetWithinSlice;
+
+      // Auto-resume if requested and was playing before
+      if (autoResume && wasPlaying) {
+        await this.play();
+      }
+
+      // Dispatch seek event for demo app to update UI
+      this.dispatchEvent(new CustomEvent('seek', {
+        detail: { time: timeSeconds, slice: targetSliceIndex, offset: offsetWithinSlice },
+      }));
+    } catch(error) {
+      // If seeking fails, dispatch error event but don't throw - allow retry
+      this.dispatchEvent(new CustomEvent('error', {
+        detail: { message: `Seek failed: ${error instanceof Error ? error.message : 'Unknown error'}`, time: timeSeconds, retryable: true },
+      }));
+    }
+  }
+
+  /**
+   * Ensure a slice is loaded with retry mechanism
+   */
+  private async ensureSliceLoadedWithRetry(sliceIndex: number, maxRetries: number = 3): Promise<void> {
+    const sessionInfo = this.client.getSessionInfo();
+    if (!sessionInfo || sliceIndex < 0 || sliceIndex >= sessionInfo.totalSlices) {
+      throw new Error(`Invalid slice index: ${sliceIndex}`);
+    }
+
+    // Check if slice is already loaded
+    if (this.client.isSliceAvailable(sliceIndex)) {
+      return; // Already loaded
+    }
+
+    let lastError: Error | null = null;
+
+    // Retry mechanism for loading slices
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Load the slice
+        const sliceId = `slice_${sliceIndex}`;
+        await this.client.loadSlice(sliceId);
+        return; // Success
+      } catch(error) {
+        lastError = error instanceof Error ? error : new Error('Unknown error');
+
+        // Dispatch progress event for retry attempts
+        this.dispatchEvent(new CustomEvent('loadretry', {
+          detail: { slice: sliceIndex, attempt, maxRetries, error: lastError.message },
+        }));
+
+        // Wait before retry (exponential backoff)
+        if (attempt < maxRetries) {
+          const delay = Math.min(1000 * 2 ** (attempt - 1), 5000);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    throw new Error(`Failed to load slice ${sliceIndex} after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
+  }
+
+  /**
+   * Ensure a slice is loaded, loading it if necessary
+   */
+  private async ensureSliceLoaded(sliceIndex: number): Promise<void> {
+    const sessionInfo = this.client.getSessionInfo();
+    if (!sessionInfo || sliceIndex < 0 || sliceIndex >= sessionInfo.totalSlices) {
+      throw new Error(`Invalid slice index: ${sliceIndex}`);
+    }
+
+    // Check if slice is already loaded
+    if (this.client.isSliceAvailable(sliceIndex)) {
+      return; // Already loaded
+    }
+
+    // Load the slice
+    const sliceId = `slice_${sliceIndex}`;
+    try {
+      await this.client.loadSlice(sliceId);
+    } catch(error) {
+      throw new Error(`Failed to load slice ${sliceIndex}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 
   /**
@@ -127,7 +261,7 @@ export class SecureAudioPlayer extends EventTarget {
     if (autoResume && wasPlaying) {
       try {
         await this.play();
-      } catch (error) {
+      } catch(error) {
         console.error('Failed to resume playback after seek:', error);
       }
     }
@@ -186,7 +320,8 @@ export class SecureAudioPlayer extends EventTarget {
       return sliceStartSeconds + elapsed;
     }
 
-    return sliceStartSeconds;
+    // If seeking was used, include the slice offset
+    return sliceStartSeconds + this._sliceOffsetSeconds;
   }
 
   /**
@@ -218,13 +353,17 @@ export class SecureAudioPlayer extends EventTarget {
       this.onSliceEnded();
     };
 
-    // Start playback
-    const startOffset = this._isPaused ? Math.max(0, this._pausedAt - this._playbackStartTime) : 0;
+    // Start playback with slice offset for precise seeking
+    const pauseOffset = this._isPaused ? Math.max(0, this._pausedAt - this._playbackStartTime) : 0;
+    const startOffset = Math.max(0, this._sliceOffsetSeconds + pauseOffset);
     this.currentSource.start(0, startOffset);
 
     this._isPlaying = true;
     this._isPaused = false;
     this._playbackStartTime = this.audioContext.currentTime - startOffset;
+
+    // Reset slice offset after using it
+    this._sliceOffsetSeconds = 0;
 
     // Mark slice as played for cleanup
     this.client.markSlicePlayed(this._currentSliceIndex);
@@ -235,7 +374,7 @@ export class SecureAudioPlayer extends EventTarget {
   /**
    * Handle slice ending
    */
-  private onSliceEnded(): void {
+  private async onSliceEnded(): Promise<void> {
     const sessionInfo = this.client.getSessionInfo();
     if (!sessionInfo)
       return;
@@ -248,10 +387,21 @@ export class SecureAudioPlayer extends EventTarget {
       this.dispatchEvent(new CustomEvent('ended'));
     } else {
       // Try to play next slice
-      const nextSliceData = this.client.getSliceData(this._currentSliceIndex);
+      let nextSliceData = this.client.getSliceData(this._currentSliceIndex);
+
+      // If slice not available, try to load it
+      if (!nextSliceData) {
+        try {
+          const sliceId = `slice_${this._currentSliceIndex}`;
+          nextSliceData = await this.client.loadSlice(sliceId);
+        } catch(loadError) {
+          console.warn(`Failed to load slice ${this._currentSliceIndex}:`, loadError);
+        }
+      }
+
       if (nextSliceData) {
         this._playbackStartTime = this.audioContext.currentTime;
-        this.playCurrentSlice();
+        await this.playCurrentSlice();
       } else {
         // Next slice not available - pause and let developer handle
         this.pause();
@@ -281,9 +431,41 @@ export class SecureAudioPlayer extends EventTarget {
    */
   destroy(): void {
     this.stop();
+    this.stopProgressUpdates();
 
     if (this.audioContext.state !== 'closed') {
       this.audioContext.close();
+    }
+  }
+
+  /**
+   * Start realtime progress updates
+   */
+  private startProgressUpdates(): void {
+    // Clear any existing timer
+    this.stopProgressUpdates();
+
+    // Emit timeupdate events at 60fps for smooth progress
+    this._progressTimer = window.setInterval(() => {
+      if (this._isPlaying) {
+        this.dispatchEvent(new CustomEvent('timeupdate', {
+          detail: {
+            currentTime: this.getCurrentTime(),
+            duration: this.duration,
+            progress: this.getCurrentTime() / this.duration,
+          },
+        }));
+      }
+    }, 16); // ~60fps
+  }
+
+  /**
+   * Stop realtime progress updates
+   */
+  private stopProgressUpdates(): void {
+    if (this._progressTimer !== null) {
+      window.clearInterval(this._progressTimer);
+      this._progressTimer = null;
     }
   }
 

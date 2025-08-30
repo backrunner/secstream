@@ -485,7 +485,6 @@
             securePlayer.addEventListener('play', () => {
                 playBtn.classList.add('playing');
                 isPlaying = true;
-                startProgressUpdates();
                 startBufferStatsUpdates();
                 showStatus('info', '▶️ Playing encrypted stream...');
             });
@@ -493,7 +492,6 @@
             securePlayer.addEventListener('pause', () => {
                 playBtn.classList.remove('playing');
                 isPlaying = false;
-                stopProgressUpdates();
                 showStatus('info', '⏸️ Secure playback paused');
             });
 
@@ -508,13 +506,50 @@
                     currentTime.textContent = formatTime(totalDuration);
                 }
                 
-                stopProgressUpdates();
                 stopBufferStatsUpdates();
                 showStatus('success', '🎵 Secure playback completed');
             });
 
+            // Handle realtime timeupdate events (replaces setInterval)
+            securePlayer.addEventListener('timeupdate', (e) => {
+                const { currentTime: seconds, duration, progress } = e.detail;
+                const percent = Math.min(progress * 100, 100);
+                progressFill.style.width = `${percent}%`;
+                currentTime.textContent = formatTime(seconds);
+
+                // Prefetch upcoming slices for smooth playback
+                const currentSlice = securePlayer.currentSlice;
+                const sessionInfo = currentSession?.sessionInfo;
+                if (sessionInfo && currentSlice < sessionInfo.totalSlices - 1) {
+                    const nextSlice = currentSlice + 1;
+                    const prefetchCount = Math.min(3, sessionInfo.totalSlices - nextSlice);
+                    secureClient.prefetchSlices(nextSlice, prefetchCount).catch(err =>
+                        console.warn('Prefetch error:', err)
+                    );
+                }
+            });
+
+            // Handle retry events for slice loading
+            securePlayer.addEventListener('loadretry', (e) => {
+                const { slice, attempt, maxRetries, error } = e.detail;
+                showStatus('warning', `🔄 Retrying slice ${slice} (${attempt}/${maxRetries}): ${error}`);
+                console.log(`🔄 SecStream: Retrying slice ${slice}, attempt ${attempt}/${maxRetries}`);
+            });
+
+            // Handle seek events
+            securePlayer.addEventListener('seek', (e) => {
+                const { time, slice, offset } = e.detail;
+                console.log(`🎯 SecStream: Seeked to ${time.toFixed(2)}s (slice ${slice}, offset ${offset.toFixed(2)}s)`);
+            });
+
             securePlayer.addEventListener('error', (event) => {
-                showStatus('error', `❌ Playback error: ${event.detail?.message || 'Unknown error'}`);
+                const { message, retryable, time } = event.detail || {};
+                if (retryable && time !== undefined) {
+                    showStatus('error', `❌ ${message} - Click progress bar to retry from ${formatTime(time)}`);
+                } else {
+                    showStatus('error', `❌ Playback error: ${message || 'Unknown error'}`);
+                }
+                console.error('🚨 SecStream error:', event.detail);
             });
 
             // Progress bar seeking
@@ -524,18 +559,16 @@
                 const rect = progressBar.getBoundingClientRect();
                 const clickX = e.clientX - rect.left;
                 const percent = clickX / rect.width;
-                const targetSlice = Math.floor(percent * currentSession.sessionInfo.totalSlices);
-
-                // Preload target slice before seeking
+                
+                // Calculate target time in seconds for precise seeking
+                const totalDuration = currentSession.sessionInfo.totalSlices * currentSession.sessionInfo.sliceDuration / 1000;
+                const targetTime = percent * totalDuration;
+                
+                // Use the new time-based seeking with on-demand slice loading
                 try {
-                    await secureClient.prefetchSlices(targetSlice, 2);
-                } catch (prefetchError) {
-                    console.warn('⚠️ Seek prefetch failed:', prefetchError);
-                }
-
-                // Use the library's auto-resume functionality - now properly awaited
-                try {
-                    await securePlayer.seekToSlice(targetSlice, true); // true = auto-resume if was playing
+                    showStatus('info', `⏭️ Seeking to ${formatTime(targetTime)}...`);
+                    await securePlayer.seekToTime(targetTime, true); // true = auto-resume if was playing
+                    showStatus('success', `✅ Seeked to ${formatTime(targetTime)}`);
                 } catch (seekError) {
                     console.error('❌ Seek failed:', seekError);
                     showStatus('error', `❌ Seek failed: ${seekError.message}`);
@@ -627,8 +660,11 @@
 
                     // Preload next slices for smooth network playback
                     const currentSlice = securePlayer.currentSlice;
-                    if (currentSlice < totalSlices - 2) {
-                        secureClient.prefetchSlices(currentSlice + 1, 2).catch(err =>
+                    if (currentSlice < totalSlices - 1) {
+                        // Prefetch upcoming slices more aggressively
+                        const nextSlice = currentSlice + 1;
+                        const prefetchCount = Math.min(3, totalSlices - nextSlice);
+                        secureClient.prefetchSlices(nextSlice, prefetchCount).catch(err =>
                             console.warn('Prefetch error:', err)
                         );
                     }

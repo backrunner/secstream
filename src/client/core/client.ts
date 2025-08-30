@@ -238,24 +238,24 @@ export class SecureAudioClient {
     const sampleRate = sessionInfo.sampleRate;
     const channels = sessionInfo.channels;
     const bitDepth = sessionInfo.bitDepth || 16;
-    
+
     // Calculate number of samples per channel
     const bytesPerSample = bitDepth / 8;
     const frameSize = channels * bytesPerSample;
     const totalFrames = pcmData.byteLength / frameSize;
-    
+
     // Create AudioBuffer
     const audioBuffer = this.audioContext.createBuffer(channels, totalFrames, sampleRate);
-    
+
     // Convert PCM data to float32 arrays for each channel
     const dataView = new DataView(pcmData);
-    
+
     for (let channel = 0; channel < channels; channel++) {
       const channelData = audioBuffer.getChannelData(channel);
-      
+
       for (let frame = 0; frame < totalFrames; frame++) {
         const byteOffset = frame * frameSize + channel * bytesPerSample;
-        
+
         let sample: number;
         if (bitDepth === 16) {
           // 16-bit signed PCM
@@ -275,11 +275,11 @@ export class SecureAudioClient {
           // Default to 16-bit if unsupported bit depth
           sample = dataView.getInt16(byteOffset, true) / 32768.0;
         }
-        
+
         channelData[frame] = sample;
       }
     }
-    
+
     return audioBuffer;
   }
 
