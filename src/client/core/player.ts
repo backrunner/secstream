@@ -100,8 +100,10 @@ export class SecureAudioPlayer extends EventTarget {
   /**
    * Seek to specific slice
    * Developers must handle loading the target slice
+   * @param sliceIndex - The target slice index to seek to
+   * @param autoResume - Optional. If true, automatically resume playback if it was playing before seeking
    */
-  seekToSlice(sliceIndex: number): void {
+  async seekToSlice(sliceIndex: number, autoResume: boolean = true): Promise<void> {
     const sessionInfo = this.client.getSessionInfo();
     if (!sessionInfo || sliceIndex < 0 || sliceIndex >= sessionInfo.totalSlices) {
       throw new Error('Invalid slice index');
@@ -109,16 +111,25 @@ export class SecureAudioPlayer extends EventTarget {
 
     const wasPlaying = this._isPlaying;
 
+    // Always pause when seeking to avoid state confusion
     if (this._isPlaying) {
       this.pause();
     }
 
+    // Update slice position
     this._currentSliceIndex = sliceIndex;
+    // Reset timing state for new slice position
     this._pausedAt = 0;
     this._sliceStartTime = 0;
+    this._playbackStartTime = 0;
 
-    if (wasPlaying) {
-      this.play();
+    // Auto-resume if requested and was playing before
+    if (autoResume && wasPlaying) {
+      try {
+        await this.play();
+      } catch (error) {
+        console.error('Failed to resume playback after seek:', error);
+      }
     }
   }
 

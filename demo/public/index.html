@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,6 +14,7 @@
     </script>
     <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
     <div class="container">
         <!-- Header -->
@@ -56,15 +58,15 @@
             <h3 class="section-title">
                 🎮 Secure Audio Player
             </h3>
-            
+
             <div class="player">
                 <div class="controls">
-                    <button class="play-btn" id="playBtn">▶️</button>
+                    <button class="play-btn" id="playBtn"></button>
                     <div class="time-display">
                         <span id="currentTime">0:00</span> / <span id="totalTime">0:00</span>
                     </div>
                 </div>
-                
+
                 <div class="progress-container" id="progressBar">
                     <div class="progress-fill" style="width: 0%"></div>
                 </div>
@@ -128,12 +130,12 @@
         let ConservativeBufferStrategy, AggressiveBufferStrategy, BalancedBufferStrategy;
         let LinearPrefetchStrategy, AdaptivePrefetchStrategy, NoPrefetchStrategy;
         let isSecStreamAvailable = false;
-        
+
         try {
             // FIXED: Use server-served paths instead of relative file paths
             const clientModule = await import('/dist/client/index.js');
             const transportModule = await import('/dist/demo-transport.js');
-            
+
             SecureAudioClient = clientModule.SecureAudioClient;
             SecureAudioPlayer = clientModule.SecureAudioPlayer;
             ConservativeBufferStrategy = clientModule.ConservativeBufferStrategy;
@@ -142,10 +144,10 @@
             LinearPrefetchStrategy = clientModule.LinearPrefetchStrategy;
             AdaptivePrefetchStrategy = clientModule.AdaptivePrefetchStrategy;
             NoPrefetchStrategy = clientModule.NoPrefetchStrategy;
-            
+
             DemoTransport = transportModule.DemoTransport;
             isSecStreamAvailable = true;
-            
+
             console.log('✅ SecStream library loaded successfully');
             showStatus('success', '🔒 SecStream library loaded - Real secure streaming available!');
         } catch (error) {
@@ -153,7 +155,7 @@
             console.error('Import error details:', error);
             showStatus('warning', '⚠️ SecStream library not available - Using Web Audio fallback demo');
         }
-        
+
         // Initialize variables
         let audioContext = null;
         let secureClient = null;
@@ -215,7 +217,7 @@
         function showStatus(type, message) {
             const statusDiv = document.getElementById('status');
             statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
-            
+
             // Auto-hide success messages after 5 seconds
             if (type === 'success') {
                 setTimeout(() => {
@@ -270,7 +272,7 @@
                 // Create transport instance
                 const transport = new DemoTransport('http://localhost:3000');
                 console.log('🚀 Created DemoTransport instance');
-                
+
                 // Create secure client
                 secureClient = new SecureAudioClient(transport, {
                     retryConfig: {
@@ -328,7 +330,7 @@
                 const { bufferStrategy, prefetchStrategy } = getSelectedStrategies();
                 securePlayer = new SecureAudioPlayer(secureClient);
                 console.log('🎵 SecureAudioPlayer created successfully');
-                
+
                 // Note: Buffer strategies are handled by the client, not the player
                 console.log('📊 Using strategies:', { bufferStrategy: bufferStrategy.constructor.name, prefetchStrategy: prefetchStrategy.constructor.name });
 
@@ -341,7 +343,7 @@
             } catch (error) {
                 console.error('💥 SecStream upload process failed:', error);
                 console.error('💥 Full error stack:', error.stack);
-                
+
                 // Check if it's a network-related error
                 if (error.message?.includes('fetch')) {
                     console.error('🌐 Network error detected - checking server connectivity...');
@@ -498,6 +500,14 @@
             securePlayer.addEventListener('ended', () => {
                 playBtn.classList.remove('playing');
                 isPlaying = false;
+                
+                // Update progress bar to 100% completion before stopping updates
+                progressFill.style.width = '100%';
+                if (currentSession?.sessionInfo) {
+                    const totalDuration = currentSession.sessionInfo.totalSlices * currentSession.sessionInfo.sliceDuration / 1000;
+                    currentTime.textContent = formatTime(totalDuration);
+                }
+                
                 stopProgressUpdates();
                 stopBufferStatsUpdates();
                 showStatus('success', '🎵 Secure playback completed');
@@ -510,20 +520,27 @@
             // Progress bar seeking
             progressBar.onclick = async (e) => {
                 if (!securePlayer || !currentSession) return;
-                
+
                 const rect = progressBar.getBoundingClientRect();
                 const clickX = e.clientX - rect.left;
                 const percent = clickX / rect.width;
                 const targetSlice = Math.floor(percent * currentSession.sessionInfo.totalSlices);
-                
+
                 // Preload target slice before seeking
                 try {
                     await secureClient.prefetchSlices(targetSlice, 2);
                 } catch (prefetchError) {
                     console.warn('⚠️ Seek prefetch failed:', prefetchError);
                 }
-                
-                securePlayer.seekToSlice(targetSlice);
+
+                // Use the library's auto-resume functionality - now properly awaited
+                try {
+                    await securePlayer.seekToSlice(targetSlice, true); // true = auto-resume if was playing
+                } catch (seekError) {
+                    console.error('❌ Seek failed:', seekError);
+                    showStatus('error', `❌ Seek failed: ${seekError.message}`);
+                }
+
                 updateNetworkRequestCount(); // Seeking may trigger network requests
                 showStatus('info', `⏭️ Seeking to slice ${targetSlice}`);
             };
@@ -539,12 +556,12 @@
             // Progress bar seeking
             progressBar.onclick = (e) => {
                 if (!currentAudio) return;
-                
+
                 const rect = progressBar.getBoundingClientRect();
                 const clickX = e.clientX - rect.left;
                 const percent = clickX / rect.width;
                 const targetTime = percent * currentAudio.duration;
-                
+
                 // In real implementation, would seek to targetTime
                 showStatus('info', `⏭️ Would seek to ${formatTime(targetTime)} (Web Audio fallback)`);
             };
@@ -555,19 +572,19 @@
 
             try {
                 if (securePlayer.isPlaying) {
-                    await securePlayer.pause();
+                    securePlayer.pause(); // pause() is synchronous, no await needed
                 } else {
                     // Preload initial slices before playing
                     const currentSlice = securePlayer.currentSlice;
                     showStatus('info', '📦 Preloading audio slices for smooth playback...');
-                    
+
                     try {
                         await secureClient.prefetchSlices(currentSlice, 3);
                         console.log('✅ Initial slices preloaded successfully');
                     } catch (prefetchError) {
                         console.warn('⚠️ Prefetch failed, playing anyway:', prefetchError);
                     }
-                    
+
                     await securePlayer.play();
                     updateNetworkRequestCount(); // Playing triggers network requests
                 }
@@ -594,21 +611,24 @@
 
         function startProgressUpdates() {
             if (progressInterval) clearInterval(progressInterval);
-            
+
             progressInterval = setInterval(() => {
                 if (securePlayer && isSecStreamAvailable) {
-                    // Get real progress from SecStream player
-                    const currentSlice = securePlayer.currentSlice;
-                    const totalSlices = currentSession?.sessionInfo?.totalSlices || 1;
-                    const percent = (currentSlice / totalSlices) * 100;
+                    // Get real progress from SecStream player using time-based calculation
                     const currentSeconds = securePlayer.currentTime;
+                    const totalSlices = currentSession?.sessionInfo?.totalSlices || 1;
+                    const totalDuration = totalSlices * (currentSession?.sessionInfo?.sliceDuration || 5000) / 1000;
                     
+                    // Use time-based progress for more accurate representation
+                    const percent = Math.min((currentSeconds / totalDuration) * 100, 100);
+
                     progressFill.style.width = `${percent}%`;
                     currentTime.textContent = formatTime(currentSeconds);
-                    
+
                     // Preload next slices for smooth network playback
+                    const currentSlice = securePlayer.currentSlice;
                     if (currentSlice < totalSlices - 2) {
-                        secureClient.prefetchSlices(currentSlice + 1, 2).catch(err => 
+                        secureClient.prefetchSlices(currentSlice + 1, 2).catch(err =>
                             console.warn('Prefetch error:', err)
                         );
                     }
@@ -617,10 +637,10 @@
                     const currentSeconds = parseFloat(currentTime.textContent.split(':').reduce((acc, time) => (60 * acc) + +time, 0));
                     const newSeconds = Math.min(currentSeconds + 0.1, currentAudio.duration);
                     const percent = (newSeconds / currentAudio.duration) * 100;
-                    
+
                     progressFill.style.width = `${percent}%`;
                     currentTime.textContent = formatTime(newSeconds);
-                    
+
                     if (newSeconds >= currentAudio.duration) {
                         toggleWebAudioPlay();
                         showStatus('success', '🎵 Web Audio playback completed (simulated)');
@@ -638,13 +658,13 @@
 
         function startBufferStatsUpdates() {
             if (bufferStatsInterval) clearInterval(bufferStatsInterval);
-            
+
             if (securePlayer && isSecStreamAvailable) {
                 bufferStatsInterval = setInterval(() => {
                     try {
                         const stats = securePlayer.getBufferStats();
                         bufferSizeEl.textContent = stats.bufferSize || 0;
-                        
+
                         // Update network request count based on real activity
                         if (stats.newRequests) {
                             networkRequestCount += stats.newRequests;
@@ -666,7 +686,7 @@
 
         // Initialize the application
         console.log('🚀 SecStream Demo initialized');
-        
+
         if (isSecStreamAvailable) {
             console.log('🔒 Real SecStream functionality available');
         } else {
@@ -674,4 +694,5 @@
         }
     </script>
 </body>
+
 </html>

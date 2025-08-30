@@ -330,6 +330,7 @@ body::after {
     border-color: transparent transparent transparent white;
     margin-left: 3px;
     transition: all 0.3s ease;
+    position: absolute;
 }
 
 .play-btn.playing::before {
@@ -337,7 +338,7 @@ body::after {
     width: 4px;
     height: 20px;
     background: white;
-    margin-left: 0;
+    margin-left: -4px;
     box-shadow: 8px 0 0 white;
     border-radius: 1px;
 }
@@ -508,12 +509,14 @@ body::after {
     
     .play-btn::before {
         border-width: 10px 0 10px 16px;
+        position: absolute;
     }
     
     .play-btn.playing::before {
         width: 3px;
         height: 16px;
         box-shadow: 6px 0 0 white;
+        margin-left: -3px;
     }
     
     .strategy-grid {
