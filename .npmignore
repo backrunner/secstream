@@ -1,0 +1,7 @@
+.history
+.editorconfig
+eslint.config.js
+prettier.config.mjs
+rollup.config.ts
+tsconfig.json
+src

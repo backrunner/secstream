@@ -1,0 +1,36 @@
+{
+  "name": "audio-secure-transfer",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Transfer audio from server to client via secure tunnel",
+  "author": "BackRunner",
+  "license": "MIT",
+  "main": "dist/audio-secure-transfer.umd.js",
+  "module": "dist/audio-secure-transfer.esm.js",
+  "typings": "dist/types/main.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "watch": "cross-env NODE_ENV=dev rollup -c rollup.config.ts --configPlugin typescript -w",
+    "build": "rimraf ./dist && tsc && cross-env NODE_ENV=production rollup -c rollup.config.ts --configPlugin typescript && rimraf ./dist/lib",
+    "lint": "eslint ./src/**/*",
+    "lint:fix": "eslint ./src/**/* --fix"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^4.19.0",
+    "@rollup/plugin-commonjs": "^26.0.3",
+    "@rollup/plugin-json": "^6.1.0",
+    "@rollup/plugin-node-resolve": "^15.3.1",
+    "@rollup/plugin-terser": "^0.4.4",
+    "@rollup/plugin-typescript": "^11.1.6",
+    "@types/node": "^24.1.0",
+    "cross-env": "^7.0.3",
+    "eslint": "^9.31.0",
+    "rimraf": "^6.0.1",
+    "rollup": "^4.45.1",
+    "rollup-plugin-filesize": "^10.0.0",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.3"
+  }
+}
