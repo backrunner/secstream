@@ -166,6 +166,7 @@
         let progressInterval = null;
         let bufferStatsInterval = null;
         let networkRequestCount = 0;
+        let currentSeekOperationId = 0; // Track current seek operation ID
 
         // DOM elements
         const uploadArea = document.getElementById('uploadArea');
@@ -559,6 +560,9 @@
             progressBar.onclick = async (e) => {
                 if (!securePlayer || !currentSession) return;
 
+                // Generate unique operation ID for this seek
+                const operationId = ++currentSeekOperationId;
+
                 const rect = progressBar.getBoundingClientRect();
                 const clickX = e.clientX - rect.left;
                 const percent = Math.max(0, Math.min(1, clickX / rect.width)); // Clamp between 0-1
@@ -573,18 +577,30 @@
                 // Use the new time-based seeking WITHOUT auto-resume
                 try {
                     showStatus('info', `⏭️ Seeking to ${formatTime(targetTime)}...`);
-                    await securePlayer.seekToTime(targetTime, false); // false = don't auto-resume
 
-                    // Only resume if user was playing before
-                    if (wasPlaying) {
-                        await securePlayer.play();
+                    // Check if operation was superseded before starting
+                    if (currentSeekOperationId !== operationId) {
+                        return;
                     }
 
-                    showStatus('success', `✅ Seeked to ${formatTime(targetTime)}`);
-                    updateNetworkRequestCount(); // Seeking may trigger network requests
+                    await securePlayer.seekToTime(targetTime, wasPlaying); // Pass wasPlaying as autoResume
+
+                    // Check if operation was superseded after seeking
+                    if (currentSeekOperationId !== operationId) {
+                        return;
+                    }
+
+                    // Only show success if not superseded
+                    if (currentSeekOperationId === operationId) {
+                        showStatus('success', `✅ Seeked to ${formatTime(targetTime)}`);
+                        updateNetworkRequestCount(); // Seeking may trigger network requests
+                    }
                 } catch (seekError) {
-                    console.error('❌ Seek failed:', seekError);
-                    showStatus('error', `❌ Seek failed: ${seekError.message}`);
+                    // Only handle errors if operation wasn't superseded
+                    if (currentSeekOperationId === operationId) {
+                        console.error('❌ Seek failed:', seekError);
+                        showStatus('error', `❌ Seek failed: ${seekError.message}`);
+                    }
                 }
             };
         }

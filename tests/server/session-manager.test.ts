@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { SessionManager } from '../../src/server/core/session-manager.js'
-import { KeyExchangeManager } from '../../src/shared/crypto/key-exchange.js'
+import { EcdhP256KeyExchangeProcessor } from '../../src/shared/crypto/key-exchange/ecdh-p256-processor.js'
 
 // Mock audio data (simple WAV header + data)
 function createMockWavData(): ArrayBuffer {
@@ -41,17 +41,17 @@ function createMockWavData(): ArrayBuffer {
 
 describe('SessionManager', () => {
   let sessionManager: SessionManager
-  let clientKeyManager: KeyExchangeManager
+  let clientKeyProcessor: EcdhP256KeyExchangeProcessor
 
   beforeEach(async () => {
     sessionManager = new SessionManager()
-    clientKeyManager = new KeyExchangeManager()
-    await clientKeyManager.initialize()
+    clientKeyProcessor = new EcdhP256KeyExchangeProcessor()
+    await clientKeyProcessor.initialize()
   })
 
   afterEach(() => {
     sessionManager.destroy()
-    clientKeyManager.destroy()
+    clientKeyProcessor.destroy()
   })
 
   it('should create a session', async () => {
@@ -69,7 +69,7 @@ describe('SessionManager', () => {
     const sessionId = await sessionManager.createSession(audioData)
     
     // Create key exchange request
-    const keyExchangeRequest = await clientKeyManager.createKeyExchangeRequest()
+    const keyExchangeRequest = await clientKeyProcessor.createKeyExchangeRequest()
     
     // Handle key exchange
     const response = await sessionManager.handleKeyExchange(sessionId, keyExchangeRequest)
@@ -77,8 +77,7 @@ describe('SessionManager', () => {
     console.log('Key exchange response:', response.sessionInfo);
     
     expect(response).toBeDefined()
-    expect(response.serverPublicKey).toBeDefined()
-    expect(response.encryptedSessionKey).toBeDefined()
+    expect(response.publicKey).toBeDefined()
     expect(response.sessionInfo).toBeDefined()
     expect(response.sessionInfo.sessionId).toBe(sessionId)
     expect(response.sessionInfo.totalSlices).toBeGreaterThan(0)
@@ -88,7 +87,7 @@ describe('SessionManager', () => {
     // Create session and complete key exchange
     const audioData = createMockWavData()
     const sessionId = await sessionManager.createSession(audioData)
-    const keyExchangeRequest = await clientKeyManager.createKeyExchangeRequest()
+    const keyExchangeRequest = await clientKeyProcessor.createKeyExchangeRequest()
     await sessionManager.handleKeyExchange(sessionId, keyExchangeRequest)
     
     const sessionInfo = sessionManager.getSessionInfo(sessionId)
@@ -103,7 +102,7 @@ describe('SessionManager', () => {
     // Create session and complete key exchange
     const audioData = createMockWavData()
     const sessionId = await sessionManager.createSession(audioData)
-    const keyExchangeRequest = await clientKeyManager.createKeyExchangeRequest()
+    const keyExchangeRequest = await clientKeyProcessor.createKeyExchangeRequest()
     const response = await sessionManager.handleKeyExchange(sessionId, keyExchangeRequest)
     
     // Get session info to access slice IDs
@@ -164,7 +163,7 @@ describe('SessionManager', () => {
   it('should handle errors gracefully', async () => {
     // Test with invalid session ID
     await expect(
-      sessionManager.handleKeyExchange('invalid-session', await clientKeyManager.createKeyExchangeRequest())
+      sessionManager.handleKeyExchange('invalid-session', await clientKeyProcessor.createKeyExchangeRequest())
     ).rejects.toThrow()
   })
 })

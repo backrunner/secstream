@@ -1,5 +1,3 @@
-// Key management for developers
-export { KeyExchangeManager } from '../shared/crypto/key-exchange.js';
 // Re-export core types that developers need
 export type {
   EncryptedSlice,
@@ -17,7 +15,7 @@ export type { AudioSliceData, ClientConfig } from './core/client.js';
 // Audio player
 export { SecureAudioPlayer } from './core/player.js';
 
-export type { PlayerEvent, PlayerState } from './core/player.js';
+export type { PlayerConfig, PlayerEvent, PlayerState } from './core/player.js';
 // Network utilities and error types
 export { RetryManager } from './network/retry-manager.js';
 export type { RetryConfig } from './network/retry-manager.js';

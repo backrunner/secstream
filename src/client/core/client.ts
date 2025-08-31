@@ -60,7 +60,7 @@ export class SecureAudioClient<
   // Buffer management
   private audioBuffers = new Map<number, AudioSliceData>();
   private playedSlices = new Set<number>();
-  private loadingSlices = new Set<string>(); // Track slices currently being loaded
+  private loadingSlices = new Map<string, AbortController>(); // Track slices currently being loaded with abort controllers
   private currentSlice = 0;
 
   constructor(
@@ -126,10 +126,28 @@ export class SecureAudioClient<
   }
 
   /**
+   * Check if there are any pending slice loading operations
+   */
+  hasPendingLoads(): boolean {
+    return this.loadingSlices.size > 0;
+  }
+
+  /**
+   * Cancel all pending slice loading operations
+   */
+  cancelPendingLoads(): void {
+    // Cancel all ongoing slice loading operations
+    for (const [_sliceId, controller] of this.loadingSlices) {
+      controller.abort();
+    }
+    this.loadingSlices.clear();
+  }
+
+  /**
    * Load slice with buffering strategy
    * Framework manages caching and decryption
    */
-  async loadSlice(sliceId: string): Promise<AudioSliceData> {
+  async loadSlice(sliceId: string, abortSignal?: AbortSignal): Promise<AudioSliceData> {
     if (!this.sessionInfo || !this.sessionKey) {
       throw new Error('Session not initialized');
     }
@@ -146,32 +164,60 @@ export class SecureAudioClient<
       return cached;
     }
 
-    // Check if slice is currently being loaded to avoid duplicate requests
-    if (this.loadingSlices.has(sliceId)) {
-      // Wait for the ongoing loading to complete
-      return new Promise<AudioSliceData>((resolve, reject) => {
-        const checkLoading = (): void => {
-          const cached = this.audioBuffers.get(sequence);
-          if (cached) {
-            resolve(cached);
-          } else if (!this.loadingSlices.has(sliceId)) {
-            // Loading failed, reject
-            reject(new Error(`Slice loading failed: ${sliceId}`));
-          } else {
-            // Still loading, check again after a short delay
-            setTimeout(checkLoading, 50);
-          }
-        };
-        checkLoading();
+    // Check if slice is currently being loaded
+    const existingController = this.loadingSlices.get(sliceId);
+    if (existingController) {
+      // If we have a new abort signal, cancel the existing load and start fresh
+      if (abortSignal) {
+        existingController.abort();
+        this.loadingSlices.delete(sliceId);
+      } else {
+        // Wait for the ongoing loading to complete
+        return new Promise<AudioSliceData>((resolve, reject) => {
+          const checkLoading = (): void => {
+            const cached = this.audioBuffers.get(sequence);
+            if (cached) {
+              resolve(cached);
+            } else if (!this.loadingSlices.has(sliceId)) {
+              // Loading failed, reject
+              reject(new Error(`Slice loading failed: ${sliceId}`));
+            } else {
+              // Still loading, check again after a short delay
+              setTimeout(checkLoading, 50);
+            }
+          };
+          checkLoading();
+        });
+      }
+    }
+
+    // Create abort controller for this loading operation
+    const loadController = new AbortController();
+
+    // Chain with provided abort signal if any
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        throw new Error('Operation cancelled');
+      }
+      abortSignal.addEventListener('abort', () => {
+        loadController.abort();
       });
     }
 
     // Mark slice as being loaded
-    this.loadingSlices.add(sliceId);
+    this.loadingSlices.set(sliceId, loadController);
 
     try {
-      // Fetch encrypted slice with retry
+      // Check if cancelled before starting
+      if (loadController.signal.aborted) {
+        throw new Error('Operation cancelled');
+      }
+
+      // Fetch encrypted slice with retry and cancellation support
       const encryptedSlice = await this.retryManager.retry(async() => {
+        if (loadController.signal.aborted) {
+          throw new Error('Operation cancelled');
+        }
         try {
           return await this.transport.fetchSlice(this.sessionInfo!.sessionId, sliceId);
         } catch(error) {
@@ -179,8 +225,16 @@ export class SecureAudioClient<
         }
       });
 
+      // Check if cancelled after fetch
+      if (loadController.signal.aborted) {
+        throw new Error('Operation cancelled');
+      }
+
       // Decrypt and decompress the slice with retry
       const audioData = await this.retryManager.retry(async() => {
+        if (loadController.signal.aborted) {
+          throw new Error('Operation cancelled');
+        }
         try {
           return await this.decryptSlice(encryptedSlice);
         } catch(error) {
@@ -188,8 +242,16 @@ export class SecureAudioClient<
         }
       });
 
+      // Check if cancelled after decrypt
+      if (loadController.signal.aborted) {
+        throw new Error('Operation cancelled');
+      }
+
       // Convert raw PCM data to AudioBuffer with retry
       const audioBuffer = await this.retryManager.retry(async() => {
+        if (loadController.signal.aborted) {
+          throw new Error('Operation cancelled');
+        }
         try {
           return this.createAudioBufferFromPCM(audioData, this.sessionInfo!);
         } catch(error) {
@@ -197,20 +259,32 @@ export class SecureAudioClient<
         }
       });
 
+      // Final check if cancelled before storing
+      if (loadController.signal.aborted) {
+        throw new Error('Operation cancelled');
+      }
+
       const sliceData: AudioSliceData = {
         audioBuffer,
         sequence: encryptedSlice.sequence,
       };
 
-      // Store in buffer
+      // Store in buffer only if not cancelled
       this.audioBuffers.set(sequence, sliceData);
 
       // Clean up old buffers
       this.cleanupBuffers();
 
       return sliceData;
+    } catch(error) {
+      // If operation was cancelled, don't treat as error
+      if (error instanceof Error && error.message === 'Operation cancelled') {
+        throw error;
+      }
+      // For other errors, rethrow
+      throw error;
     } finally {
-      // Always remove from loading set when done (success or failure)
+      // Always remove from loading set when done (success, failure, or cancellation)
       this.loadingSlices.delete(sliceId);
     }
   }
@@ -222,6 +296,11 @@ export class SecureAudioClient<
   async prefetchSlices(startSlice: number, count: number): Promise<void> {
     if (!this.sessionInfo)
       return;
+
+    // Don't prefetch if we have pending loads (likely from seeking)
+    if (this.hasPendingLoads()) {
+      return;
+    }
 
     const promises: Promise<void>[] = [];
 
@@ -237,11 +316,14 @@ export class SecureAudioClient<
         continue;
       }
 
-      // Only prefetch if not already cached
-      if (!this.audioBuffers.has(sliceIndex)) {
+      // Only prefetch if not already cached and no pending loads
+      if (!this.audioBuffers.has(sliceIndex) && !this.hasPendingLoads()) {
         promises.push(
           this.loadSlice(sliceId).then(() => {}).catch((error) => {
-            console.warn(`Failed to prefetch slice ${sliceId}:`, error);
+            // Don't log cancelled operations as errors
+            if (error instanceof Error && error.message !== 'Operation cancelled') {
+              console.warn(`Failed to prefetch slice ${sliceId}:`, error);
+            }
           }),
         );
       }
@@ -377,9 +459,9 @@ export class SecureAudioClient<
   // Clean up resources
   destroy(): void {
     this.keyExchangeProcessor.destroy();
+    this.cancelPendingLoads();
     this.audioBuffers.clear();
     this.playedSlices.clear();
-    this.loadingSlices.clear();
 
     if (this.audioContext.state !== 'closed') {
       this.audioContext.close();
