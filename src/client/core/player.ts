@@ -98,7 +98,16 @@ export class SecureAudioPlayer extends EventTarget {
     }
 
     // Clear ended state when starting to play
+    const wasEnded = this._isEnded;
     this._isEnded = false;
+
+    // If playback had ended previously, restart from the beginning
+    if (wasEnded) {
+      this._currentSliceIndex = 0;
+      this._sliceOffsetSeconds = 0;
+      this._pausedAt = 0;
+      this._playbackStartTime = 0;
+    }
 
     await this.playCurrentSlice();
 
