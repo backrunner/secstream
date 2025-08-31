@@ -1,6 +1,6 @@
 # SecStream - Documentation
 
-Welcome to SecStream, a secure, customizable audio streaming library with pluggable compression, encryption, and key exchange processors.
+Welcome to SecStream, a secure, customizable audio streaming library with pluggable compression, encryption, key exchange processors, and customizable slice ID generation.
 
 ## Quick Start
 
@@ -23,9 +23,12 @@ const server = new SecureAudioServer(sessionManager);
 
 - ✅ **Type-Safe Architecture** - Full TypeScript support with proper generics
 - ✅ **Customizable Processors** - Plug in your own compression, encryption, and key exchange algorithms
+- ✅ **Customizable Slice ID Generation** - Multiple built-in generators and support for custom implementations
 - ✅ **Zero Legacy Code** - Clean, modern codebase without `any` types
 - ✅ **Organized Structure** - Well-structured shared modules with proper separation of concerns
 - ✅ **Performance Optimized** - Efficient algorithms with customization options
+- ✅ **Accurate Audio Seeking** - Precise seeking within sliced audio streams
+- ✅ **Sound Quality Optimization** - Enhanced audio processing and server performance
 
 ## Architecture
 
@@ -33,6 +36,7 @@ const server = new SecureAudioServer(sessionManager);
 src/
 ├── shared/
 │   ├── types/           # Type definitions and interfaces
+│   ├── slice-id/        # Slice ID generation strategies
 │   ├── compression/     # Compression processors
 │   │   └── processors/  # Individual compression implementations
 │   ├── crypto/          # Cryptographic functionality
@@ -43,9 +47,29 @@ src/
 └── server/              # Server-side code
 ```
 
-## Default Processors
+## Default Implementations
 
-SecStream comes with production-ready default processors:
+### Slice ID Generators
+- **`NanoidSliceIdGenerator`** - **Default**
+  - Uses nanoid library for cryptographically secure, URL-safe unique IDs
+  - Configurable length (default 21 characters)
+  - Recommended for production use
+
+- **`UuidSliceIdGenerator`**
+  - Uses standard UUID v4 format
+  - Maximum compatibility with existing systems
+
+- **`SequentialSliceIdGenerator`**
+  - Generates predictable sequential IDs for debugging
+  - **WARNING: Less secure** - use only for development/debugging
+
+- **`TimestampSliceIdGenerator`**
+  - Combines timestamp, session info, and slice index
+  - Provides natural ordering and time-based uniqueness
+
+- **`HashSliceIdGenerator`**
+  - Generates deterministic IDs based on session and slice info
+  - Useful for caching scenarios where same input = same ID
 
 ### Compression
 - **`DeflateCompressionProcessor`** - DEFLATE compression using fflate library
@@ -69,6 +93,53 @@ SecStream comes with production-ready default processors:
 
 ## Getting Started
 
-1. **Basic Usage**: Start with the default processors for immediate functionality
-2. **Custom Development**: Follow the [Processor Development Guide](./processor-development.md) to create your own processors
-3. **Type Safety**: Use TypeScript generics for full type safety throughout your application
+### Basic Usage with Default Slice ID Generator
+```typescript
+import { 
+  SecureAudioClient, 
+  SessionManager,
+  DeflateCompressionProcessor,
+  AesGcmEncryptionProcessor,
+  EcdhP256KeyExchangeProcessor 
+} from 'secstream';
+
+// Using defaults (NanoidSliceIdGenerator is used automatically)
+const client = new SecureAudioClient(transport, {
+  processingConfig: {
+    compressionProcessor: new DeflateCompressionProcessor(9), // Max compression
+    encryptionProcessor: new AesGcmEncryptionProcessor(),
+    keyExchangeProcessor: new EcdhP256KeyExchangeProcessor()
+  }
+});
+```
+
+### Custom Slice ID Generator Usage
+```typescript
+import { 
+  SessionManager,
+  UuidSliceIdGenerator,
+  SequentialSliceIdGenerator,
+  TimestampSliceIdGenerator,
+  HashSliceIdGenerator
+} from 'secstream';
+
+// Use UUID-based slice IDs for maximum compatibility
+const sessionManager = new SessionManager({
+  sliceIdGenerator: new UuidSliceIdGenerator()
+});
+
+// Use sequential IDs for debugging (development only)
+const debugSessionManager = new SessionManager({
+  sliceIdGenerator: new SequentialSliceIdGenerator('debug')
+});
+
+// Use timestamp-based IDs for natural ordering
+const timestampSessionManager = new SessionManager({
+  sliceIdGenerator: new TimestampSliceIdGenerator()
+});
+
+// Use hash-based IDs for caching scenarios
+const cachingSessionManager = new SessionManager({
+  sliceIdGenerator: new HashSliceIdGenerator()
+});
+```

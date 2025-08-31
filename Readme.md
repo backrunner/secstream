@@ -1,24 +1,21 @@
 # SecStream 🔐🎵
 
-A secure audio streaming library that prevents client-side audio piracy through encryption, slicing, and memory protection.
+A secure audio streaming library that prevents client-side audio piracy through encryption, slicing, memory protection, and customizable processing components.
 
 [![npm version](https://badge.fury.io/js/secstream.svg)](https://badge.fury.io/js/secstream)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)](https://www.typescriptlang.org/)
 
 ## ✨ Features
 
-- 🔐 **End-to-End Encryption**: Each session uses unique keys with ECDH key exchange
-- 🎵 **Multi-Format Audio Support**: Native support for WAV, MP3, FLAC, and OGG formats
-- 🎵 **Audio Slicing**: Break audio into encrypted chunks for secure streaming
-- 🛡️ **Anti-Piracy**: Memory protection and buffer disposal prevent audio extraction
-- 📦 **Compression**: Reduce bandwidth usage with built-in compression
-- 🌐 **Framework Agnostic**: Works with Express, Hono, Cloudflare Workers, and more
-- ☁️ **Cloudflare Workers Ready**: Full compatibility with edge computing platforms
-- 🎮 **Full Playback Control**: Play, pause, stop, seek with smooth buffering
-- 🔄 **Network Resilience**: Handles poor network connections gracefully
-- 👤 **Anonymous Access**: No user credentials required
-- 🚀 **Cross-Platform**: Works in Node.js, browsers, Deno, and Bun
+- 🔐 **End-to-End Encryption**: ECDH key exchange with AES-GCM encryption
+- 🎵 **Multi-Format Audio**: WAV, MP3, FLAC, and OGG support
+- 🎵 **Secure Audio Slicing**: Encrypted chunks prevent piracy
+- 🛡️ **Memory Protection**: Buffer disposal prevents audio extraction
+- 🌐 **Framework Agnostic**: Works with Express, Hono, Cloudflare Workers
+- 🎮 **Full Playback Control**: Play, pause, stop, seek with precision
+- 🆔 **Customizable Slice IDs**: Multiple generation strategies
+- 🚀 **Cross-Platform**: Node.js, browsers, Deno, and Bun
 
 ## 🚀 Quick Start
 
@@ -36,10 +33,12 @@ import { Hono } from 'hono'
 
 const app = new Hono()
 
-// Create session manager
+// Create session manager with custom slice ID generator
 const sessionManager = new SessionManager({
   sliceDurationMs: 5000,
-  compressionLevel: 6
+  compressionLevel: 6,
+  // Optional: Use custom slice ID generator
+  // sliceIdGenerator: new UuidSliceIdGenerator() // or TimestampSliceIdGenerator(), etc.
 })
 
 // Create API
@@ -102,6 +101,63 @@ const sessionManager = new SessionManager({
 - **MP3**: ID3v2 tag detection and MPEG frame parsing
 - **FLAC**: Metadata block parsing and stream info extraction
 - **OGG**: Format detection and basic metadata support
+
+#### Slice ID Generators
+
+SecStream supports multiple slice ID generation strategies:
+
+```typescript
+import {
+  NanoidSliceIdGenerator,    // Default - cryptographically secure
+  UuidSliceIdGenerator,      // Standard UUID v4 format
+  SequentialSliceIdGenerator, // Predictable IDs for debugging
+  TimestampSliceIdGenerator, // Time-based ordering
+  HashSliceIdGenerator      // Deterministic hash-based IDs
+} from 'secstream'
+
+// Use different generators
+const sessionManager = new SessionManager({
+  // Default: NanoidSliceIdGenerator (recommended for production)
+  sliceIdGenerator: new NanoidSliceIdGenerator(21), // Configurable length
+
+  // For maximum compatibility
+  // sliceIdGenerator: new UuidSliceIdGenerator(),
+
+  // For debugging (less secure - development only)
+  // sliceIdGenerator: new SequentialSliceIdGenerator('debug'),
+
+  // For natural ordering
+  // sliceIdGenerator: new TimestampSliceIdGenerator(),
+
+  // For caching scenarios (deterministic)
+  // sliceIdGenerator: new HashSliceIdGenerator()
+})
+```
+
+**Creating Custom Slice ID Generators:**
+
+```typescript
+import { SliceIdGenerator } from 'secstream'
+
+class CustomSliceIdGenerator implements SliceIdGenerator {
+  constructor(private prefix: string = 'CUSTOM') {}
+
+  generateSliceId(sliceIndex: number, sessionId: string, totalSlices: number): string {
+    const timestamp = Date.now().toString(36);
+    const random = Math.random().toString(36).slice(2, 8);
+    return `${this.prefix}_${timestamp}_${sliceIndex}_${random}`;
+  }
+
+  getName(): string {
+    return `CustomSliceIdGenerator(${this.prefix})`;
+  }
+}
+
+// Use your custom generator
+const sessionManager = new SessionManager({
+  sliceIdGenerator: new CustomSliceIdGenerator('MYAPP')
+});
+```
 
 #### SecureAudioAPI
 
@@ -330,10 +386,17 @@ const client = new SecStreamClient({
 
 - **Audio Format**: WAV provides best performance, MP3/FLAC require more processing
 - **Slice Duration**: Balance security (shorter) vs. performance (longer)
+- **Slice ID Generation**: Choose appropriate generator for your use case:
+  - **NanoidSliceIdGenerator**: Best balance of security and performance (default)
+  - **UuidSliceIdGenerator**: Good compatibility, slightly slower than nanoid
+  - **SequentialSliceIdGenerator**: Fastest generation, but less secure (development only)
+  - **TimestampSliceIdGenerator**: Fast with natural ordering
+  - **HashSliceIdGenerator**: Slower due to hashing, but deterministic
 - **Compression**: Higher compression saves bandwidth but uses more CPU
 - **Buffer Size**: More buffering = smoother playback but more memory usage
 - **CDN**: Use CDN for static assets, direct connection for API
 - **Edge Computing**: Deploy on Cloudflare Workers for global performance
+- **Audio Seeking**: Optimized seeking algorithm provides accurate positioning within slices
 
 ### Security Best Practices
 
@@ -344,6 +407,12 @@ const client = new SecStreamClient({
 - **Session Cleanup**: Implement session expiration
 - **Error Handling**: Don't leak sensitive information in errors
 - **Content Security**: Use proper CORS headers for cross-origin requests
+- **Slice ID Security**: Use secure generators in production:
+  - ✅ **NanoidSliceIdGenerator** (default, recommended)
+  - ✅ **UuidSliceIdGenerator** (secure, good compatibility)
+  - ⚠️ **SequentialSliceIdGenerator** (predictable, development only)
+  - ✅ **TimestampSliceIdGenerator** (secure with time-based uniqueness)
+  - ✅ **HashSliceIdGenerator** (deterministic but secure)
 
 ### Monitoring
 
@@ -352,13 +421,15 @@ const client = new SecStreamClient({
 - Watch memory usage and cleanup effectiveness
 - Alert on unusual session creation patterns
 
+---
+
 ## 🤝 Contributing
 
 Contributions welcome! Please read the contributing guidelines and submit pull requests.
 
 ## 📄 License
 
-MIT License - see LICENSE file for details.
+Apache-2.0 License - see LICENSE file for details.
 
 ## 🛡️ Security
 
