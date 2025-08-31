@@ -133,8 +133,13 @@ export class SecureAudioClient<
       throw new Error('Session not initialized');
     }
 
+    // Get sequence from slice ID using the session info
+    const sequence = this.sessionInfo.sliceIds.indexOf(sliceId);
+    if (sequence === -1) {
+      throw new Error(`Invalid slice ID: ${sliceId}`);
+    }
+
     // Check if slice is already loaded
-    const sequence = Number.parseInt(sliceId.replace('slice_', ''));
     const cached = this.audioBuffers.get(sequence);
     if (cached) {
       return cached;
@@ -196,7 +201,12 @@ export class SecureAudioClient<
       if (sliceIndex >= this.sessionInfo.totalSlices)
         break;
 
-      const sliceId = `slice_${sliceIndex}`;
+      // Get slice ID from the session's slice ID list
+      const sliceId = this.sessionInfo.sliceIds[sliceIndex];
+      if (!sliceId) {
+        console.warn(`No slice ID found for index ${sliceIndex}`);
+        continue;
+      }
 
       // Only prefetch if not already cached
       if (!this.audioBuffers.has(sliceIndex)) {

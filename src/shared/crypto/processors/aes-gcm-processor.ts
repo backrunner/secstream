@@ -1,4 +1,4 @@
-import type { EncryptionProcessor, CryptoMetadata, EncryptionOptions } from '../../types/processors.js';
+import type { CryptoMetadata, EncryptionProcessor } from '../../types/processors.js';
 
 /**
  * Supported key types for AES-GCM encryption
@@ -14,28 +14,27 @@ export class AesGcmEncryptionProcessor implements EncryptionProcessor<AESGCMKeyT
   constructor() {}
 
   async encrypt(
-    data: ArrayBuffer, 
-    key: AESGCMKeyType, 
-    options?: EncryptionOptions
+    data: ArrayBuffer,
+    key: AESGCMKeyType,
   ): Promise<{ encrypted: ArrayBuffer; metadata: CryptoMetadata }> {
     const cryptoKey = await this.ensureCryptoKey(key);
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    
+
     const encrypted = await crypto.subtle.encrypt(
       {
         name: 'AES-GCM',
         iv,
       },
       cryptoKey,
-      data
+      data,
     );
 
     return {
       encrypted,
       metadata: {
         iv: iv.buffer as ArrayBuffer,
-        algorithm: 'AES-GCM'
-      }
+        algorithm: 'AES-GCM',
+      },
     };
   }
 
@@ -43,7 +42,6 @@ export class AesGcmEncryptionProcessor implements EncryptionProcessor<AESGCMKeyT
     encryptedData: ArrayBuffer,
     key: AESGCMKeyType,
     metadata: CryptoMetadata,
-    options?: EncryptionOptions
   ): Promise<ArrayBuffer> {
     const cryptoKey = await this.ensureCryptoKey(key);
     const iv = this.extractIV(metadata);
@@ -54,7 +52,7 @@ export class AesGcmEncryptionProcessor implements EncryptionProcessor<AESGCMKeyT
         iv,
       },
       cryptoKey,
-      encryptedData
+      encryptedData,
     );
   }
 
@@ -68,15 +66,14 @@ export class AesGcmEncryptionProcessor implements EncryptionProcessor<AESGCMKeyT
     }
 
     let keyData: ArrayBuffer;
-    
+
     if (typeof key === 'string') {
       const encoder = new TextEncoder();
-      keyData = encoder.encode(key);
-      
+      const encodedKey = encoder.encode(key);
+
       // Pad or truncate to 32 bytes for AES-256
       const paddedKey = new Uint8Array(32);
-      const keyBytes = new Uint8Array(keyData);
-      paddedKey.set(keyBytes.slice(0, Math.min(keyBytes.length, 32)));
+      paddedKey.set(encodedKey.slice(0, Math.min(encodedKey.length, 32)));
       keyData = paddedKey.buffer as ArrayBuffer;
     } else if (key instanceof ArrayBuffer) {
       // Pad or truncate to 32 bytes for AES-256
@@ -85,7 +82,7 @@ export class AesGcmEncryptionProcessor implements EncryptionProcessor<AESGCMKeyT
       paddedKey.set(keyBytes.slice(0, Math.min(keyBytes.length, 32)));
       keyData = paddedKey.buffer as ArrayBuffer;
     } else {
-      throw new Error(`Unsupported key type: ${typeof key}`);
+      throw new TypeError(`Unsupported key type: ${typeof key}`);
     }
 
     return await crypto.subtle.importKey(
@@ -96,7 +93,7 @@ export class AesGcmEncryptionProcessor implements EncryptionProcessor<AESGCMKeyT
         length: 256,
       },
       false,
-      ['encrypt', 'decrypt']
+      ['encrypt', 'decrypt'],
     );
   }
 

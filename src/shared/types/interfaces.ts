@@ -17,6 +17,7 @@ export interface SessionInfo {
   sampleRate: number;
   channels: number;
   bitDepth?: number;
+  sliceIds: string[]; // Sorted list of slice IDs for the session
 }
 
 // Legacy key exchange interfaces - marked for backward compatibility

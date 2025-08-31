@@ -10,6 +10,7 @@ import type {
 import { DeflateCompressionProcessor } from '../../shared/compression/processors/deflate-processor.js';
 import { AesGcmEncryptionProcessor } from '../../shared/crypto/processors/aes-gcm-processor.js';
 import { estimateSampleCount, extractAudioData, parseAudioMetadata } from '../audio/format-parser.js';
+import { nanoid } from 'nanoid';
 
 export interface AudioSource {
   data: ArrayBuffer;
@@ -71,6 +72,16 @@ export class AudioProcessor<
     const samplesPerSlice = Math.floor((audioSource.sampleRate * this.config.sliceDurationMs) / 1000);
     const totalSlices = Math.ceil(audioSource.length / samplesPerSlice);
 
+    // Generate unique slice IDs using nanoid
+    const sliceIds: string[] = [];
+    const sliceIdToIndexMap = new Map<string, number>();
+    
+    for (let i = 0; i < totalSlices; i++) {
+      const sliceId = nanoid();
+      sliceIds.push(sliceId);
+      sliceIdToIndexMap.set(sliceId, i);
+    }
+
     const sessionInfo: SessionInfo = {
       sessionId,
       totalSlices,
@@ -78,6 +89,7 @@ export class AudioProcessor<
       sampleRate: audioSource.sampleRate,
       channels: audioSource.channels,
       bitDepth: audioSource.metadata.bitDepth || 16,
+      sliceIds, // Include the sorted list of slice IDs
     };
 
     // Don't pre-process all slices - create them on-demand for fast startup
@@ -92,14 +104,14 @@ export class AudioProcessor<
           return sliceCache.get(sliceId)!;
         }
 
-        // Parse slice index from sliceId (format: "slice_0", "slice_1", etc.)
-        const sliceIndex = Number.parseInt(sliceId.split('_')[1]);
-        if (Number.isNaN(sliceIndex) || sliceIndex < 0 || sliceIndex >= totalSlices) {
+        // Get slice index from sliceId mapping
+        const sliceIndex = sliceIdToIndexMap.get(sliceId);
+        if (sliceIndex === undefined || sliceIndex < 0 || sliceIndex >= totalSlices) {
           return null;
         }
 
         // Prepare slice on-demand for fast response
-        const encryptedSlice = await this.prepareSlice(audioSource, sliceIndex, sessionKey, sessionId, samplesPerSlice);
+        const encryptedSlice = await this.prepareSlice(audioSource, sliceIndex, sessionKey, sessionId, samplesPerSlice, sliceId);
 
         // Cache the slice (but implement LRU eviction to prevent memory buildup)
         this.manageSliceCache(sliceCache, sliceId, encryptedSlice);
@@ -115,10 +127,10 @@ export class AudioProcessor<
     sessionKey: TKey,
     sessionId: string,
     samplesPerSlice: number,
+    sliceId: string, // Use the provided sliceId instead of generating it
   ): Promise<EncryptedSlice> {
     const startSample = sliceIndex * samplesPerSlice;
     const endSample = Math.min(startSample + samplesPerSlice, audioSource.length);
-    const sliceId = `slice_${sliceIndex}`;
 
     // Extract slice data efficiently
     const sliceData = this.extractAudioSlice(audioSource, startSample, endSample);
@@ -136,7 +148,7 @@ export class AudioProcessor<
     // Return pure binary data - no base64, no hashes
     // Developer handles transport encoding and validation as needed
     return {
-      id: sliceId,
+      id: sliceId, // Use the provided nanoid instead of generated slice_${index}
       encryptedData: encrypted, // Pure ArrayBuffer
       iv: this.extractIV(metadata), // Extract IV from metadata for backward compatibility
       sequence: sliceIndex,

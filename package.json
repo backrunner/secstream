@@ -37,7 +37,8 @@
     "lint:fix": "eslint ./src/**/* --fix"
   },
   "dependencies": {
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "nanoid": "^5.0.9"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^4.19.0",

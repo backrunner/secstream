@@ -111,7 +111,7 @@ export class SessionManager {
     // Update the response with the actual session info
     response.sessionInfo = session.sessionInfo;
 
-    return response;
+    return response as KeyExchangeResponse<TResponseData, SessionInfo>;
   }
 
   async getSlice(sessionId: string, sliceId: string): Promise<EncryptedSlice | null> {

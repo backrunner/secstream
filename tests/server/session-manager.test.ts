@@ -106,11 +106,18 @@ describe('SessionManager', () => {
     const keyExchangeRequest = await clientKeyManager.createKeyExchangeRequest()
     const response = await sessionManager.handleKeyExchange(sessionId, keyExchangeRequest)
     
-    // Try to get the first slice
-    const slice = await sessionManager.getSlice(sessionId, 'slice_0')
+    // Get session info to access slice IDs
+    const sessionInfo = sessionManager.getSessionInfo(sessionId)
+    expect(sessionInfo).toBeDefined()
+    expect(sessionInfo!.sliceIds).toBeDefined()
+    expect(sessionInfo!.sliceIds.length).toBeGreaterThan(0)
+    
+    // Try to get the first slice using the actual slice ID
+    const firstSliceId = sessionInfo!.sliceIds[0]
+    const slice = await sessionManager.getSlice(sessionId, firstSliceId)
     
     expect(slice).toBeDefined()
-    expect(slice!.id).toBe('slice_0')
+    expect(slice!.id).toBe(firstSliceId)
     expect(slice!.sessionId).toBe(sessionId)
     expect(slice!.sequence).toBe(0)
     expect(slice!.encryptedData).toBeDefined()
@@ -121,7 +128,7 @@ describe('SessionManager', () => {
     const sessionInfo = sessionManager.getSessionInfo('non-existent')
     expect(sessionInfo).toBeNull()
     
-    const slice = await sessionManager.getSlice('non-existent', 'slice_0')
+    const slice = await sessionManager.getSlice('non-existent', 'invalid-slice-id')
     expect(slice).toBeNull()
   })
 

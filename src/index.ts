@@ -1,3 +1,34 @@
+// Export client functionality
 export * from './client/index.js';
+
+// Export server functionality
 export * from './server/index.js';
-export * from './shared/index.js';
+
+// Export shared functionality (but avoid conflicts with client exports)
+export * from './shared/compression/index.js';
+export * from './shared/crypto/index.js';
+export * from './shared/utils/index.js';
+
+// Export shared types explicitly to avoid conflicts
+export type {
+  AudioSlice,
+  AudioConfig,
+  EncryptedSlice,
+  SessionInfo,
+  SliceRequest,
+  DEFAULT_CONFIG,
+} from './shared/types/interfaces.js';
+
+// Export processor types explicitly to avoid naming conflicts
+export type {
+  CompressionProcessor,
+  CompressionOptions,
+  EncryptionProcessor,
+  EncryptionOptions,
+  CryptoMetadata,
+  KeyExchangeProcessor,
+  ProcessingConfig,
+  // Use qualified names to avoid conflicts with client's legacy exports
+  KeyExchangeRequest as ProcessorKeyExchangeRequest,
+  KeyExchangeResponse as ProcessorKeyExchangeResponse,
+} from './shared/types/processors.js';

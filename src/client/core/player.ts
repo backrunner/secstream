@@ -185,8 +185,15 @@ export class SecureAudioPlayer extends EventTarget {
     // Retry mechanism for loading slices
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        // Load the slice
-        const sliceId = `slice_${sliceIndex}`;
+        // Load the slice using slice ID from session info
+        const sessionInfo = this.client.getSessionInfo();
+        if (!sessionInfo) {
+          throw new Error('Session not initialized');
+        }
+        const sliceId = sessionInfo.sliceIds[sliceIndex];
+        if (!sliceId) {
+          throw new Error(`No slice ID found for index ${sliceIndex}`);
+        }
         await this.client.loadSlice(sliceId);
         return; // Success
       } catch(error) {
@@ -222,8 +229,11 @@ export class SecureAudioPlayer extends EventTarget {
       return; // Already loaded
     }
 
-    // Load the slice
-    const sliceId = `slice_${sliceIndex}`;
+    // Load the slice using slice ID from session info
+    const sliceId = sessionInfo.sliceIds[sliceIndex];
+    if (!sliceId) {
+      throw new Error(`No slice ID found for index ${sliceIndex}`);
+    }
     try {
       await this.client.loadSlice(sliceId);
     } catch(error) {
@@ -392,8 +402,17 @@ export class SecureAudioPlayer extends EventTarget {
       // If slice not available, try to load it
       if (!nextSliceData) {
         try {
-          const sliceId = `slice_${this._currentSliceIndex}`;
-          nextSliceData = await this.client.loadSlice(sliceId);
+          const sessionInfo = this.client.getSessionInfo();
+          if (!sessionInfo) {
+            console.warn('Session not initialized, cannot load slice');
+          } else {
+            const sliceId = sessionInfo.sliceIds[this._currentSliceIndex];
+            if (sliceId) {
+              nextSliceData = await this.client.loadSlice(sliceId);
+            } else {
+              console.warn(`No slice ID found for index ${this._currentSliceIndex}`);
+            }
+          }
         } catch(loadError) {
           console.warn(`Failed to load slice ${this._currentSliceIndex}:`, loadError);
         }

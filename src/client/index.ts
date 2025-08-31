@@ -3,8 +3,8 @@ export { KeyExchangeManager } from '../shared/crypto/key-exchange.js';
 // Re-export core types that developers need
 export type {
   EncryptedSlice,
-  KeyExchangeRequest,
-  KeyExchangeResponse,
+  LegacyKeyExchangeRequest as KeyExchangeRequest,
+  LegacyKeyExchangeResponse as KeyExchangeResponse,
   SessionInfo,
 } from '../shared/types/interfaces.js';
 
@@ -25,14 +25,10 @@ export type { RetryConfig } from './network/retry-manager.js';
 // Transport interface - developers implement this
 export type { Transport } from './network/transport.js';
 
-export { DefaultTransport } from './network/transport.js';
-
 export {
   DecodingError,
   DecryptionError,
   NetworkError,
-  SecStreamError,
-  ServerError,
 } from './network/transport.js';
 export {
   AdaptivePrefetchStrategy,
