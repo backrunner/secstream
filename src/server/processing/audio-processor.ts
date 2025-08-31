@@ -27,6 +27,22 @@ export interface AudioProcessorConfig<
 > extends Partial<AudioConfig> {
   processingConfig?: ProcessingConfig<TCompressionProcessor, TEncryptionProcessor>;
   sliceIdGenerator?: SliceIdGenerator; // Allow custom slice ID generation
+  /**
+   * Prewarm first N slices right after key exchange to reduce initial latency.
+   * 0 or undefined disables prewarm. Default: 0
+   */
+  prewarmSlices?: number;
+  /** Maximum parallel prewarm workers. Default: 3 */
+  prewarmConcurrency?: number;
+  /**
+   * Enable adaptive compression: lower or skip compression for already-compressed formats (mp3/flac/ogg).
+   * Default: true
+   */
+  adaptiveCompression?: boolean;
+  /** Server-side encrypted slice cache size (LRU). Default: 10 */
+  serverCacheSize?: number;
+  /** Server-side encrypted slice TTL in ms. Default: 300_000 (5 minutes) */
+  serverCacheTtlMs?: number;
 }
 
 /**
@@ -43,7 +59,7 @@ export class AudioProcessor<
   TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
   TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
 > {
-  private readonly config: AudioConfig;
+  private readonly config: AudioProcessorConfig<TCompressionProcessor, TEncryptionProcessor> & AudioConfig;
   private readonly compressionProcessor: TCompressionProcessor;
   private readonly encryptionProcessor: TEncryptionProcessor;
   private readonly sliceIdGenerator: SliceIdGenerator;
@@ -53,6 +69,11 @@ export class AudioProcessor<
       sliceDurationMs: 5000,
       compressionLevel: 6,
       encryptionAlgorithm: 'AES-GCM',
+      prewarmSlices: 0,
+      prewarmConcurrency: 3,
+      adaptiveCompression: true,
+      serverCacheSize: 10,
+      serverCacheTtlMs: 300_000,
       ...config,
     };
 
@@ -97,8 +118,52 @@ export class AudioProcessor<
       sliceIds, // Include the sorted list of slice IDs
     };
 
-    // Don't pre-process all slices - create them on-demand for fast startup
+    // On-demand slice cache and in-flight de-duplication to handle concurrency
     const sliceCache = new Map<string, EncryptedSlice>();
+    const inFlight = new Map<string, Promise<EncryptedSlice>>();
+
+    // Optional prewarm of first N slices to reduce initial latency
+    const prewarmCount = Math.max(0, Math.min(this.config.prewarmSlices || 0, totalSlices));
+    if (prewarmCount > 0) {
+      const tasks: Array<() => Promise<void>> = [];
+      for (let i = 0; i < prewarmCount; i++) {
+        const sliceId = sliceIds[i];
+        tasks.push(async() => {
+          try {
+            if (sliceCache.has(sliceId))
+              return;
+            const encryptedSlice = await this.prepareSlice(
+              audioSource,
+              i,
+              sessionKey,
+              sessionId,
+              samplesPerSlice,
+              sliceId,
+            );
+            this.manageSliceCache(sliceCache, sliceId, encryptedSlice);
+          } catch {
+            // Prewarm failures are non-fatal; continue
+          }
+        });
+      }
+
+      const concurrency = Math.max(1, this.config.prewarmConcurrency || 3);
+      let idx = 0;
+      const runNext = async(): Promise<void> => {
+        if (idx >= tasks.length)
+          return;
+        const task = tasks[idx++];
+        await task();
+        return runNext();
+      };
+
+      const runners: Promise<void>[] = [];
+      for (let i = 0; i < Math.min(concurrency, tasks.length); i++) {
+        runners.push(runNext());
+      }
+      // Fire and forget; do not await to keep key exchange fast
+      Promise.all(runners).catch(() => {});
+    }
 
     // Return getSlice function that prepares slices on-demand
     return {
@@ -109,6 +174,12 @@ export class AudioProcessor<
           return sliceCache.get(sliceId)!;
         }
 
+        // Coalesce concurrent requests for the same slice
+        const existing = inFlight.get(sliceId);
+        if (existing) {
+          return await existing;
+        }
+
         // Get slice index from sliceId mapping
         const sliceIndex = sliceIdToIndexMap.get(sliceId);
         if (sliceIndex === undefined || sliceIndex < 0 || sliceIndex >= totalSlices) {
@@ -116,12 +187,17 @@ export class AudioProcessor<
         }
 
         // Prepare slice on-demand for fast response
-        const encryptedSlice = await this.prepareSlice(audioSource, sliceIndex, sessionKey, sessionId, samplesPerSlice, sliceId);
+        const promise = this.prepareSlice(audioSource, sliceIndex, sessionKey, sessionId, samplesPerSlice, sliceId)
+          .then((encryptedSlice) => {
+            this.manageSliceCache(sliceCache, sliceId, encryptedSlice);
+            return encryptedSlice;
+          })
+          .finally(() => {
+            inFlight.delete(sliceId);
+          });
+        inFlight.set(sliceId, promise);
 
-        // Cache the slice (but implement LRU eviction to prevent memory buildup)
-        this.manageSliceCache(sliceCache, sliceId, encryptedSlice);
-
-        return encryptedSlice;
+        return await promise;
       },
     };
   }
@@ -140,8 +216,8 @@ export class AudioProcessor<
     // Extract slice data efficiently
     const sliceData = this.extractAudioSlice(audioSource, startSample, endSample);
 
-    // Compress the slice using configurable processor
-    const compressionOptions: CompressionOptions = { level: this.config.compressionLevel };
+    // Compress the slice using configurable processor (adaptive for compressed formats)
+    const compressionOptions: CompressionOptions = { level: this.getCompressionLevelForFormat(audioSource.format) };
     const compressedData = await this.compressionProcessor.compress(sliceData, compressionOptions);
 
     // Encrypt the compressed slice using configurable processor
@@ -175,7 +251,7 @@ export class AudioProcessor<
   ): void {
     // Add new slice to cache with expiration
     const now = Date.now();
-    const ttl = 300_000; // 5 minutes server-side cache
+    const ttl = this.config.serverCacheTtlMs ?? 300_000; // 5 minutes server-side cache
     (encryptedSlice as any).expiresAt = now + ttl;
 
     sliceCache.set(sliceId, encryptedSlice);
@@ -188,7 +264,7 @@ export class AudioProcessor<
     }
 
     // Implement LRU eviction if still over limit
-    const maxCacheSize = 10; // Increased for better performance
+    const maxCacheSize = this.config.serverCacheSize ?? 10; // Increased for better performance
     if (sliceCache.size > maxCacheSize) {
       // Remove oldest non-expired slices
       const entries = Array.from(sliceCache.entries())
@@ -274,5 +350,14 @@ export class AudioProcessor<
     const endByte = Math.floor((endSample / totalSamples) * totalBytes);
 
     return audioSource.data.slice(startByte, endByte);
+  }
+
+  private getCompressionLevelForFormat(format: string): number {
+    if (!this.config.adaptiveCompression)
+      return this.config.compressionLevel;
+    // For already compressed formats, reduce level to minimize CPU with minimal size gain
+    if (format === 'mp3' || format === 'flac' || format === 'ogg' || format === 'aac')
+      return 0; // effectively store or lowest effort
+    return this.config.compressionLevel;
   }
 }

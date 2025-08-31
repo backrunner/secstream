@@ -50,7 +50,8 @@ export class SecureAudioPlayer extends EventTarget {
       bufferingTimeoutMs: 10000, // Default 10 seconds
       ...config,
     };
-    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    // Reuse client's AudioContext to ensure identical sampleRate and avoid resampling artifacts
+    this.audioContext = this.client.getAudioContext();
 
     // Create audio graph
     this.gainNode = this.audioContext.createGain();
@@ -254,7 +255,20 @@ export class SecureAudioPlayer extends EventTarget {
           }
 
           // Load the slice
-          sliceData = await this.client.loadSlice(sliceId);
+          const loadController = new AbortController();
+          // If this seek gets superseded, abort the in-flight load immediately to reduce contention
+          const onSuperseded = (): void => {
+            if (this._currentSeekOperationId !== operationId) {
+              loadController.abort();
+            }
+          };
+          // Micro-poll since we cannot hook into ID change event
+          const supersedeCheck = window.setInterval(onSuperseded, 16);
+          try {
+            sliceData = await this.client.loadSlice(sliceId, loadController.signal);
+          } finally {
+            clearInterval(supersedeCheck);
+          }
 
           // Exit buffering state
           this.exitBufferingState();

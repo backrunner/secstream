@@ -31,12 +31,31 @@ interface AudioSession {
  */
 export class SessionManager {
   private sessions = new Map<string, AudioSession>();
-  private config: AudioConfig & { processingConfig?: ProcessingConfig; sliceIdGenerator?: SliceIdGenerator };
+  private config: AudioConfig & {
+    processingConfig?: ProcessingConfig;
+    sliceIdGenerator?: SliceIdGenerator;
+    prewarmSlices?: number;
+    prewarmConcurrency?: number;
+    adaptiveCompression?: boolean;
+    serverCacheSize?: number;
+    serverCacheTtlMs?: number;
+  };
+
   private cleanupTimer: Timer | null = null;
   private keyExchangeProcessorFactory: () => KeyExchangeProcessor<any, any, any, any>;
 
   constructor(
-    config: Partial<AudioConfig & { processingConfig?: ProcessingConfig; sliceIdGenerator?: SliceIdGenerator }> = {},
+    config: Partial<
+      AudioConfig & {
+        processingConfig?: ProcessingConfig;
+        sliceIdGenerator?: SliceIdGenerator;
+        prewarmSlices?: number;
+        prewarmConcurrency?: number;
+        adaptiveCompression?: boolean;
+        serverCacheSize?: number;
+        serverCacheTtlMs?: number;
+      }
+    > = {},
   ) {
     this.config = {
       sliceDurationMs: 5000,

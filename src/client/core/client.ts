@@ -25,6 +25,8 @@ export interface ClientConfig<
 > {
   bufferSize: number;
   prefetchSize: number;
+  /** Maximum concurrent prefetch/loading operations (excludes the active, high-priority load) */
+  prefetchConcurrency: number;
   retryConfig: Partial<RetryConfig>;
   processingConfig?: ProcessingConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>;
 }
@@ -71,6 +73,7 @@ export class SecureAudioClient<
     this.config = {
       bufferSize: 5,
       prefetchSize: 3,
+      prefetchConcurrency: 3,
       retryConfig: {},
       ...config,
     };
@@ -82,6 +85,13 @@ export class SecureAudioClient<
     this.compressionProcessor = (processingConfig.compressionProcessor || new DeflateCompressionProcessor()) as TCompressionProcessor;
     this.encryptionProcessor = (processingConfig.encryptionProcessor || new AesGcmEncryptionProcessor()) as TEncryptionProcessor;
     this.keyExchangeProcessor = (processingConfig.keyExchangeProcessor || new EcdhP256KeyExchangeProcessor()) as TKeyExchangeProcessor;
+  }
+
+  /**
+   * Expose the decoding AudioContext so that player can share it to avoid resampling
+   */
+  getAudioContext(): AudioContext {
+    return this.audioContext;
   }
 
   /**
@@ -121,6 +131,20 @@ export class SecureAudioClient<
     // Process key exchange response
     this.sessionKey = await this.keyExchangeProcessor.processKeyExchangeResponse(keyExchangeResponse) as TKey;
     this.sessionInfo = keyExchangeResponse.sessionInfo;
+
+    // Align decode context sample rate with source to preserve quality
+    try {
+      if (this.audioContext.sampleRate !== this.sessionInfo.sampleRate) {
+        if (this.audioContext.state !== 'closed') {
+          await this.audioContext.close();
+        }
+        this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+          sampleRate: this.sessionInfo.sampleRate,
+        });
+      }
+    } catch {
+      // Fallback: if sampleRate hint not supported, continue with existing context
+    }
 
     return this.sessionInfo;
   }
@@ -297,39 +321,49 @@ export class SecureAudioClient<
     if (!this.sessionInfo)
       return;
 
-    // Don't prefetch if we have pending loads (likely from seeking)
-    if (this.hasPendingLoads()) {
-      return;
-    }
-
-    const promises: Promise<void>[] = [];
+    // Limit concurrency for prefetch to reduce contention and maintain responsiveness
+    const tasks: Array<() => Promise<void>> = [];
 
     for (let i = 0; i < count; i++) {
       const sliceIndex = startSlice + i;
       if (sliceIndex >= this.sessionInfo.totalSlices)
         break;
 
-      // Get slice ID from the session's slice ID list
       const sliceId = this.sessionInfo.sliceIds[sliceIndex];
-      if (!sliceId) {
-        console.warn(`No slice ID found for index ${sliceIndex}`);
+      if (!sliceId)
         continue;
-      }
 
-      // Only prefetch if not already cached and no pending loads
-      if (!this.audioBuffers.has(sliceIndex) && !this.hasPendingLoads()) {
-        promises.push(
-          this.loadSlice(sliceId).then(() => {}).catch((error) => {
-            // Don't log cancelled operations as errors
-            if (error instanceof Error && error.message !== 'Operation cancelled') {
-              console.warn(`Failed to prefetch slice ${sliceId}:`, error);
-            }
-          }),
-        );
-      }
+      if (this.audioBuffers.has(sliceIndex))
+        continue;
+
+      tasks.push(async() => {
+        try {
+          await this.loadSlice(sliceId);
+        } catch(error) {
+          if (!(error instanceof Error && error.message === 'Operation cancelled')) {
+            console.warn(`Failed to prefetch slice ${sliceId}:`, error);
+          }
+        }
+      });
     }
 
-    await Promise.all(promises);
+    const concurrency = Math.max(1, this.config.prefetchConcurrency);
+    let index = 0;
+    const runners: Promise<void>[] = [];
+
+    const runNext = async(): Promise<void> => {
+      if (index >= tasks.length)
+        return;
+      const task = tasks[index++];
+      await task();
+      return runNext();
+    };
+
+    for (let i = 0; i < Math.min(concurrency, tasks.length); i++) {
+      runners.push(runNext());
+    }
+
+    await Promise.all(runners);
   }
 
   /**
@@ -399,7 +433,7 @@ export class SecureAudioClient<
     const frameSize = channels * bytesPerSample;
     const totalFrames = pcmData.byteLength / frameSize;
 
-    // Create AudioBuffer
+    // Create AudioBuffer with exact sampleRate to avoid resampling drift
     const audioBuffer = this.audioContext.createBuffer(channels, totalFrames, sampleRate);
 
     // Convert PCM data to float32 arrays for each channel
@@ -423,8 +457,11 @@ export class SecureAudioClient<
           const intVal = (byte3 << 16) | (byte2 << 8) | byte1;
           // Convert from unsigned to signed
           sample = (intVal > 0x7FFFFF ? intVal - 0x1000000 : intVal) / 8388608.0;
+        } else if (bitDepth === 32 && sessionInfo.isFloat32) {
+          // 32-bit float PCM
+          sample = dataView.getFloat32(byteOffset, true);
         } else if (bitDepth === 32) {
-          // 32-bit signed PCM
+          // 32-bit signed PCM (int)
           sample = dataView.getInt32(byteOffset, true) / 2147483648.0;
         } else {
           // Default to 16-bit if unsupported bit depth

@@ -38,6 +38,8 @@ export interface SessionInfo {
   sampleRate: number;
   channels: number;
   bitDepth?: number;
+  /** Whether raw PCM is 32-bit float (true) or integer (false/undefined) */
+  isFloat32?: boolean;
   sliceIds: string[]; // Sorted list of slice IDs for the session
 }
 
