@@ -33,7 +33,7 @@ export class SessionManager {
   private sessions = new Map<string, AudioSession>();
   private config: AudioConfig & { processingConfig?: ProcessingConfig; sliceIdGenerator?: SliceIdGenerator };
   private cleanupTimer: Timer | null = null;
-  private keyExchangeProcessorFactory: () => KeyExchangeProcessor;
+  private keyExchangeProcessorFactory: () => KeyExchangeProcessor<any, any, any, any>;
 
   constructor(
     config: Partial<AudioConfig & { processingConfig?: ProcessingConfig; sliceIdGenerator?: SliceIdGenerator }> = {},
@@ -50,7 +50,7 @@ export class SessionManager {
     this.keyExchangeProcessorFactory = keyExchangeProcessor
       ? () => {
         // Create a new instance of the same type as the provided processor
-        const ProcessorClass = keyExchangeProcessor.constructor as new () => KeyExchangeProcessor;
+        const ProcessorClass = keyExchangeProcessor.constructor as new () => any;
         return new ProcessorClass();
       }
       : () => new EcdhP256KeyExchangeProcessor();

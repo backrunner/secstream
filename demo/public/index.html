@@ -484,28 +484,26 @@
             // Set up player events
             securePlayer.addEventListener('play', () => {
                 playBtn.classList.add('playing');
-                isPlaying = true;
                 startBufferStatsUpdates();
                 showStatus('info', '▶️ Playing encrypted stream...');
             });
 
             securePlayer.addEventListener('pause', () => {
                 playBtn.classList.remove('playing');
-                isPlaying = false;
+                stopBufferStatsUpdates(); // Stop buffer updates when paused
                 showStatus('info', '⏸️ Secure playback paused');
             });
 
             securePlayer.addEventListener('ended', () => {
                 playBtn.classList.remove('playing');
-                isPlaying = false;
-                
+
                 // Update progress bar to 100% completion before stopping updates
                 progressFill.style.width = '100%';
                 if (currentSession?.sessionInfo) {
                     const totalDuration = currentSession.sessionInfo.totalSlices * currentSession.sessionInfo.sliceDuration / 1000;
                     currentTime.textContent = formatTime(totalDuration);
                 }
-                
+
                 stopBufferStatsUpdates();
                 showStatus('success', '🎵 Secure playback completed');
             });
@@ -517,15 +515,20 @@
                 progressFill.style.width = `${percent}%`;
                 currentTime.textContent = formatTime(seconds);
 
-                // Prefetch upcoming slices for smooth playback
+                // Prefetch upcoming slices for smooth playback (throttled to avoid excessive requests)
                 const currentSlice = securePlayer.currentSlice;
                 const sessionInfo = currentSession?.sessionInfo;
                 if (sessionInfo && currentSlice < sessionInfo.totalSlices - 1) {
+                    // Only prefetch if we don't have enough buffered slices ahead
                     const nextSlice = currentSlice + 1;
-                    const prefetchCount = Math.min(3, sessionInfo.totalSlices - nextSlice);
-                    secureClient.prefetchSlices(nextSlice, prefetchCount).catch(err =>
-                        console.warn('Prefetch error:', err)
-                    );
+                    const prefetchCount = Math.min(2, sessionInfo.totalSlices - nextSlice);
+
+                    // Check if we already have the next slice before prefetching
+                    if (!secureClient.isSliceAvailable(nextSlice)) {
+                        secureClient.prefetchSlices(nextSlice, prefetchCount).catch(err =>
+                            console.warn('Prefetch error:', err)
+                        );
+                    }
                 }
             });
 
@@ -558,24 +561,31 @@
 
                 const rect = progressBar.getBoundingClientRect();
                 const clickX = e.clientX - rect.left;
-                const percent = clickX / rect.width;
-                
+                const percent = Math.max(0, Math.min(1, clickX / rect.width)); // Clamp between 0-1
+
                 // Calculate target time in seconds for precise seeking
                 const totalDuration = currentSession.sessionInfo.totalSlices * currentSession.sessionInfo.sliceDuration / 1000;
                 const targetTime = percent * totalDuration;
-                
-                // Use the new time-based seeking with on-demand slice loading
+
+                // Remember if we were playing before seeking
+                const wasPlaying = securePlayer.isPlaying;
+
+                // Use the new time-based seeking WITHOUT auto-resume
                 try {
                     showStatus('info', `⏭️ Seeking to ${formatTime(targetTime)}...`);
-                    await securePlayer.seekToTime(targetTime, true); // true = auto-resume if was playing
+                    await securePlayer.seekToTime(targetTime, false); // false = don't auto-resume
+
+                    // Only resume if user was playing before
+                    if (wasPlaying) {
+                        await securePlayer.play();
+                    }
+
                     showStatus('success', `✅ Seeked to ${formatTime(targetTime)}`);
+                    updateNetworkRequestCount(); // Seeking may trigger network requests
                 } catch (seekError) {
                     console.error('❌ Seek failed:', seekError);
                     showStatus('error', `❌ Seek failed: ${seekError.message}`);
                 }
-
-                updateNetworkRequestCount(); // Seeking may trigger network requests
-                showStatus('info', `⏭️ Seeking to slice ${targetSlice}`);
             };
         }
 
@@ -606,24 +616,43 @@
             try {
                 if (securePlayer.isPlaying) {
                     securePlayer.pause(); // pause() is synchronous, no await needed
+                    showStatus('info', '⏸️ Paused secure playback');
                 } else {
-                    // Preload initial slices before playing
+                    // Check if we're resuming from pause or starting fresh
                     const currentSlice = securePlayer.currentSlice;
-                    showStatus('info', '📦 Preloading audio slices for smooth playback...');
+                    const sessionInfo = currentSession?.sessionInfo;
 
-                    try {
-                        await secureClient.prefetchSlices(currentSlice, 3);
-                        console.log('✅ Initial slices preloaded successfully');
-                    } catch (prefetchError) {
-                        console.warn('⚠️ Prefetch failed, playing anyway:', prefetchError);
+                    if (!sessionInfo) {
+                        throw new Error('No session information available');
+                    }
+
+                    // Only preload if starting from beginning or slice not available
+                    if (currentSlice === 0 || !secureClient.isSliceAvailable(currentSlice)) {
+                        showStatus('info', '📦 Loading audio slice for playback...');
+
+                        try {
+                            // Load current slice and prefetch next ones
+                            const sliceId = sessionInfo.sliceIds[currentSlice];
+                            if (sliceId) {
+                                await secureClient.loadSlice(sliceId);
+                            }
+                            await secureClient.prefetchSlices(currentSlice + 1, 2);
+                            console.log('✅ Audio slices loaded successfully');
+                        } catch (prefetchError) {
+                            console.warn('⚠️ Prefetch failed, playing current slice:', prefetchError);
+                        }
                     }
 
                     await securePlayer.play();
                     updateNetworkRequestCount(); // Playing triggers network requests
+                    showStatus('info', '▶️ Playing secure stream');
                 }
             } catch (error) {
                 showStatus('error', `❌ Playback control error: ${error.message}`);
                 console.error('Playback control error details:', error);
+
+                // Reset button state on error
+                playBtn.classList.remove('playing');
             }
         }
 
@@ -647,29 +676,37 @@
 
             progressInterval = setInterval(() => {
                 if (securePlayer && isSecStreamAvailable) {
+                    // Only update progress if actually playing
+                    if (!securePlayer.isPlaying) {
+                        return; // Don't update progress when paused
+                    }
+
                     // Get real progress from SecStream player using time-based calculation
                     const currentSeconds = securePlayer.currentTime;
                     const totalSlices = currentSession?.sessionInfo?.totalSlices || 1;
                     const totalDuration = totalSlices * (currentSession?.sessionInfo?.sliceDuration || 5000) / 1000;
-                    
+
                     // Use time-based progress for more accurate representation
                     const percent = Math.min((currentSeconds / totalDuration) * 100, 100);
 
                     progressFill.style.width = `${percent}%`;
                     currentTime.textContent = formatTime(currentSeconds);
 
-                    // Preload next slices for smooth network playback
+                    // Preload next slices for smooth network playbook (less aggressive to avoid multiple requests)
                     const currentSlice = securePlayer.currentSlice;
-                    if (currentSlice < totalSlices - 1) {
-                        // Prefetch upcoming slices more aggressively
+                    if (currentSlice < totalSlices - 1 && currentSlice % 2 === 0) { // Only prefetch every other update
                         const nextSlice = currentSlice + 1;
-                        const prefetchCount = Math.min(3, totalSlices - nextSlice);
+                        const prefetchCount = Math.min(2, totalSlices - nextSlice); // Reduced prefetch count
                         secureClient.prefetchSlices(nextSlice, prefetchCount).catch(err =>
                             console.warn('Prefetch error:', err)
                         );
                     }
                 } else if (currentAudio) {
-                    // Simulate progress for Web Audio fallback
+                    // Simulate progress for Web Audio fallback only if local isPlaying is true
+                    if (!isPlaying) {
+                        return;
+                    }
+
                     const currentSeconds = parseFloat(currentTime.textContent.split(':').reduce((acc, time) => (60 * acc) + +time, 0));
                     const newSeconds = Math.min(currentSeconds + 0.1, currentAudio.duration);
                     const percent = (newSeconds / currentAudio.duration) * 100;

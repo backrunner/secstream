@@ -60,6 +60,7 @@ export class SecureAudioClient<
   // Buffer management
   private audioBuffers = new Map<number, AudioSliceData>();
   private playedSlices = new Set<number>();
+  private loadingSlices = new Set<string>(); // Track slices currently being loaded
   private currentSlice = 0;
 
   constructor(
@@ -145,45 +146,73 @@ export class SecureAudioClient<
       return cached;
     }
 
-    // Fetch encrypted slice with retry
-    const encryptedSlice = await this.retryManager.retry(async() => {
-      try {
-        return await this.transport.fetchSlice(this.sessionInfo!.sessionId, sliceId);
-      } catch(error) {
-        throw new NetworkError(`Failed to fetch slice ${sliceId}`, error as Error);
-      }
-    });
+    // Check if slice is currently being loaded to avoid duplicate requests
+    if (this.loadingSlices.has(sliceId)) {
+      // Wait for the ongoing loading to complete
+      return new Promise<AudioSliceData>((resolve, reject) => {
+        const checkLoading = (): void => {
+          const cached = this.audioBuffers.get(sequence);
+          if (cached) {
+            resolve(cached);
+          } else if (!this.loadingSlices.has(sliceId)) {
+            // Loading failed, reject
+            reject(new Error(`Slice loading failed: ${sliceId}`));
+          } else {
+            // Still loading, check again after a short delay
+            setTimeout(checkLoading, 50);
+          }
+        };
+        checkLoading();
+      });
+    }
 
-    // Decrypt and decompress the slice with retry
-    const audioData = await this.retryManager.retry(async() => {
-      try {
-        return await this.decryptSlice(encryptedSlice);
-      } catch(error) {
-        throw new DecryptionError(`Failed to decrypt slice ${sliceId}`, error as Error);
-      }
-    });
+    // Mark slice as being loaded
+    this.loadingSlices.add(sliceId);
 
-    // Convert raw PCM data to AudioBuffer with retry
-    const audioBuffer = await this.retryManager.retry(async() => {
-      try {
-        return this.createAudioBufferFromPCM(audioData, this.sessionInfo!);
-      } catch(error) {
-        throw new DecodingError(`Failed to decode slice ${sliceId}`, error as Error);
-      }
-    });
+    try {
+      // Fetch encrypted slice with retry
+      const encryptedSlice = await this.retryManager.retry(async() => {
+        try {
+          return await this.transport.fetchSlice(this.sessionInfo!.sessionId, sliceId);
+        } catch(error) {
+          throw new NetworkError(`Failed to fetch slice ${sliceId}`, error as Error);
+        }
+      });
 
-    const sliceData: AudioSliceData = {
-      audioBuffer,
-      sequence: encryptedSlice.sequence,
-    };
+      // Decrypt and decompress the slice with retry
+      const audioData = await this.retryManager.retry(async() => {
+        try {
+          return await this.decryptSlice(encryptedSlice);
+        } catch(error) {
+          throw new DecryptionError(`Failed to decrypt slice ${sliceId}`, error as Error);
+        }
+      });
 
-    // Store in buffer
-    this.audioBuffers.set(sequence, sliceData);
+      // Convert raw PCM data to AudioBuffer with retry
+      const audioBuffer = await this.retryManager.retry(async() => {
+        try {
+          return this.createAudioBufferFromPCM(audioData, this.sessionInfo!);
+        } catch(error) {
+          throw new DecodingError(`Failed to decode slice ${sliceId}`, error as Error);
+        }
+      });
 
-    // Clean up old buffers
-    this.cleanupBuffers();
+      const sliceData: AudioSliceData = {
+        audioBuffer,
+        sequence: encryptedSlice.sequence,
+      };
 
-    return sliceData;
+      // Store in buffer
+      this.audioBuffers.set(sequence, sliceData);
+
+      // Clean up old buffers
+      this.cleanupBuffers();
+
+      return sliceData;
+    } finally {
+      // Always remove from loading set when done (success or failure)
+      this.loadingSlices.delete(sliceId);
+    }
   }
 
   /**
@@ -350,6 +379,7 @@ export class SecureAudioClient<
     this.keyExchangeProcessor.destroy();
     this.audioBuffers.clear();
     this.playedSlices.clear();
+    this.loadingSlices.clear();
 
     if (this.audioContext.state !== 'closed') {
       this.audioContext.close();

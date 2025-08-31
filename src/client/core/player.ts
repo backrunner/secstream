@@ -73,10 +73,18 @@ export class SecureAudioPlayer extends EventTarget {
 
     this._isPaused = true;
     this._isPlaying = false;
-    this._pausedAt = this.audioContext.currentTime;
+
+    // Calculate accurate pause position
+    if (this._playbackStartTime > 0) {
+      this._pausedAt = this.audioContext.currentTime;
+    }
 
     if (this.currentSource) {
-      this.currentSource.stop();
+      try {
+        this.currentSource.stop();
+      } catch {
+        // Ignore errors from stopping already-stopped sources
+      }
       this.currentSource = null;
     }
 
@@ -96,9 +104,14 @@ export class SecureAudioPlayer extends EventTarget {
     this._pausedAt = 0;
     this._sliceStartTime = 0;
     this._playbackStartTime = 0;
+    this._sliceOffsetSeconds = 0;
 
     if (this.currentSource) {
-      this.currentSource.stop();
+      try {
+        this.currentSource.stop();
+      } catch {
+        // Ignore errors from stopping already-stopped sources
+      }
       this.currentSource = null;
     }
 
@@ -113,7 +126,7 @@ export class SecureAudioPlayer extends EventTarget {
    * @param timeSeconds - The target time position in seconds
    * @param autoResume - Optional. If true, automatically resume playback if it was playing before seeking
    */
-  async seekToTime(timeSeconds: number, autoResume: boolean = true): Promise<void> {
+  async seekToTime(timeSeconds: number, autoResume: boolean = false): Promise<void> {
     const sessionInfo = this.client.getSessionInfo();
     if (!sessionInfo) {
       throw new Error('No session initialized');
@@ -131,7 +144,7 @@ export class SecureAudioPlayer extends EventTarget {
 
     const wasPlaying = this._isPlaying;
 
-    // Always pause when seeking
+    // Always pause when seeking to ensure clean state
     if (this._isPlaying) {
       this.pause();
     }
@@ -149,7 +162,7 @@ export class SecureAudioPlayer extends EventTarget {
       // Set the offset within the slice for precise positioning
       this._sliceOffsetSeconds = offsetWithinSlice;
 
-      // Auto-resume if requested and was playing before
+      // Auto-resume only if explicitly requested AND was playing before
       if (autoResume && wasPlaying) {
         await this.play();
       }
@@ -247,7 +260,7 @@ export class SecureAudioPlayer extends EventTarget {
    * @param sliceIndex - The target slice index to seek to
    * @param autoResume - Optional. If true, automatically resume playback if it was playing before seeking
    */
-  async seekToSlice(sliceIndex: number, autoResume: boolean = true): Promise<void> {
+  async seekToSlice(sliceIndex: number, autoResume: boolean = false): Promise<void> {
     const sessionInfo = this.client.getSessionInfo();
     if (!sessionInfo || sliceIndex < 0 || sliceIndex >= sessionInfo.totalSlices) {
       throw new Error('Invalid slice index');
@@ -266,8 +279,9 @@ export class SecureAudioPlayer extends EventTarget {
     this._pausedAt = 0;
     this._sliceStartTime = 0;
     this._playbackStartTime = 0;
+    this._sliceOffsetSeconds = 0;
 
-    // Auto-resume if requested and was playing before
+    // Auto-resume only if explicitly requested AND was playing before
     if (autoResume && wasPlaying) {
       try {
         await this.play();
@@ -324,13 +338,13 @@ export class SecureAudioPlayer extends EventTarget {
 
     if (this._isPlaying && this._playbackStartTime > 0) {
       const elapsed = this.audioContext.currentTime - this._playbackStartTime;
-      return sliceStartSeconds + elapsed;
-    } else if (this._pausedAt > 0) {
+      return sliceStartSeconds + elapsed + this._sliceOffsetSeconds;
+    } else if (this._isPaused && this._pausedAt > 0 && this._playbackStartTime > 0) {
       const elapsed = this._pausedAt - this._playbackStartTime;
-      return sliceStartSeconds + elapsed;
+      return sliceStartSeconds + elapsed + this._sliceOffsetSeconds;
     }
 
-    // If seeking was used, include the slice offset
+    // If seeking was used but not playing, return seek position
     return sliceStartSeconds + this._sliceOffsetSeconds;
   }
 
@@ -363,9 +377,17 @@ export class SecureAudioPlayer extends EventTarget {
       this.onSliceEnded();
     };
 
-    // Start playback with slice offset for precise seeking
-    const pauseOffset = this._isPaused ? Math.max(0, this._pausedAt - this._playbackStartTime) : 0;
-    const startOffset = Math.max(0, this._sliceOffsetSeconds + pauseOffset);
+    // Calculate start offset for resume or seeking
+    let startOffset = this._sliceOffsetSeconds;
+    if (this._isPaused && this._pausedAt > 0 && this._playbackStartTime > 0) {
+      // If resuming from pause, add the paused duration
+      const pausedDuration = this._pausedAt - this._playbackStartTime;
+      startOffset += pausedDuration;
+    }
+
+    // Ensure offset doesn't exceed buffer duration
+    startOffset = Math.max(0, Math.min(startOffset, sliceData.audioBuffer.duration));
+
     this.currentSource.start(0, startOffset);
 
     this._isPlaying = true;
@@ -389,6 +411,11 @@ export class SecureAudioPlayer extends EventTarget {
     if (!sessionInfo)
       return;
 
+    // Only continue to next slice if we're still supposed to be playing
+    if (!this._isPlaying) {
+      return; // User paused, don't auto-advance
+    }
+
     this._currentSliceIndex++;
 
     if (this._currentSliceIndex >= sessionInfo.totalSlices) {
@@ -396,7 +423,7 @@ export class SecureAudioPlayer extends EventTarget {
       this.stop();
       this.dispatchEvent(new CustomEvent('ended'));
     } else {
-      // Try to play next slice
+      // Try to play next slice only if still playing
       let nextSliceData = this.client.getSliceData(this._currentSliceIndex);
 
       // If slice not available, try to load it
@@ -418,11 +445,11 @@ export class SecureAudioPlayer extends EventTarget {
         }
       }
 
-      if (nextSliceData) {
+      if (nextSliceData && this._isPlaying) { // Double-check we're still playing
         this._playbackStartTime = this.audioContext.currentTime;
         await this.playCurrentSlice();
       } else {
-        // Next slice not available - pause and let developer handle
+        // Next slice not available or user paused - pause and let developer handle
         this.pause();
         this.dispatchEvent(new CustomEvent('error', {
           detail: { message: `Next slice ${this._currentSliceIndex} not available` },
