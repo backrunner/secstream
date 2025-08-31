@@ -1,16 +1,16 @@
-import type { AudioConfig, EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
-import type { AudioMetadata } from '../audio/format-parser.js';
-import type { 
-  CompressionProcessor, 
-  EncryptionProcessor, 
-  ProcessingConfig,
+import type { AudioConfig, EncryptedSlice, SessionInfo, SliceIdGenerator } from '../../shared/types/interfaces.js';
+import type {
   CompressionOptions,
-  CryptoMetadata
+  CompressionProcessor,
+  CryptoMetadata,
+  EncryptionProcessor,
+  ProcessingConfig,
 } from '../../shared/types/processors.js';
+import type { AudioMetadata } from '../audio/format-parser.js';
 import { DeflateCompressionProcessor } from '../../shared/compression/processors/deflate-processor.js';
 import { AesGcmEncryptionProcessor } from '../../shared/crypto/processors/aes-gcm-processor.js';
+import { NanoidSliceIdGenerator } from '../../shared/slice-id/generators.js';
 import { estimateSampleCount, extractAudioData, parseAudioMetadata } from '../audio/format-parser.js';
-import { nanoid } from 'nanoid';
 
 export interface AudioSource {
   data: ArrayBuffer;
@@ -23,9 +23,10 @@ export interface AudioSource {
 
 export interface AudioProcessorConfig<
   TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
-  TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor
+  TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
 > extends Partial<AudioConfig> {
   processingConfig?: ProcessingConfig<TCompressionProcessor, TEncryptionProcessor>;
+  sliceIdGenerator?: SliceIdGenerator; // Allow custom slice ID generation
 }
 
 /**
@@ -40,11 +41,12 @@ export interface AudioProcessorConfig<
 export class AudioProcessor<
   TKey = unknown,
   TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
-  TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor
+  TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
 > {
   private readonly config: AudioConfig;
   private readonly compressionProcessor: TCompressionProcessor;
   private readonly encryptionProcessor: TEncryptionProcessor;
+  private readonly sliceIdGenerator: SliceIdGenerator;
 
   constructor(config: AudioProcessorConfig<TCompressionProcessor, TEncryptionProcessor> = {}) {
     this.config = {
@@ -53,11 +55,14 @@ export class AudioProcessor<
       encryptionAlgorithm: 'AES-GCM',
       ...config,
     };
-    
+
     // Initialize processors with defaults or user-provided ones
     const processingConfig = config.processingConfig || {};
     this.compressionProcessor = (processingConfig.compressionProcessor || new DeflateCompressionProcessor()) as TCompressionProcessor;
     this.encryptionProcessor = (processingConfig.encryptionProcessor || new AesGcmEncryptionProcessor()) as TEncryptionProcessor;
+
+    // Initialize slice ID generator with default or user-provided one
+    this.sliceIdGenerator = config.sliceIdGenerator || new NanoidSliceIdGenerator();
   }
 
   async processAudio(
@@ -72,12 +77,12 @@ export class AudioProcessor<
     const samplesPerSlice = Math.floor((audioSource.sampleRate * this.config.sliceDurationMs) / 1000);
     const totalSlices = Math.ceil(audioSource.length / samplesPerSlice);
 
-    // Generate unique slice IDs using nanoid
+    // Generate unique slice IDs using the configured generator
     const sliceIds: string[] = [];
     const sliceIdToIndexMap = new Map<string, number>();
-    
+
     for (let i = 0; i < totalSlices; i++) {
-      const sliceId = nanoid();
+      const sliceId = await this.sliceIdGenerator.generateSliceId(i, sessionId, totalSlices);
       sliceIds.push(sliceId);
       sliceIdToIndexMap.set(sliceId, i);
     }
@@ -141,8 +146,8 @@ export class AudioProcessor<
 
     // Encrypt the compressed slice using configurable processor
     const { encrypted, metadata } = await this.encryptionProcessor.encrypt(
-      compressedData, 
-      sessionKey as Parameters<TEncryptionProcessor['encrypt']>[1]
+      compressedData,
+      sessionKey as Parameters<TEncryptionProcessor['encrypt']>[1],
     );
 
     // Return pure binary data - no base64, no hashes

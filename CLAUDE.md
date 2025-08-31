@@ -1,7 +1,7 @@
 # CLAUDE.md - SecStream AI Coding Instructions
 
 ## Project Overview
-SecStream is a secure, type-safe audio streaming library with pluggable compression, encryption, and key exchange processors. The library is designed for flexibility while maintaining strong TypeScript type safety throughout.
+SecStream is a secure, type-safe audio streaming library with pluggable compression, encryption, key exchange processors, and customizable slice ID generation. The library is designed for flexibility while maintaining strong TypeScript type safety throughout.
 
 ## Core Architecture Principles
 
@@ -30,12 +30,22 @@ export interface EncryptionProcessor<TKey = CryptoKey | ArrayBuffer | string> {
 }
 ```
 
+### 4. Customizable Slice ID Generation
+The library supports customizable slice ID generation strategies:
+```typescript
+export interface SliceIdGenerator {
+  generateSliceId(sliceIndex: number, sessionId: string, totalSlices: number): Promise<string> | string;
+  getName(): string;
+}
+```
+
 ## Folder Structure and Organization
 
 ```
 src/
 ├── shared/
 │   ├── types/           # Type definitions and interfaces
+│   ├── slice-id/        # Slice ID generation strategies
 │   ├── compression/     # Compression processors
 │   │   └── processors/  # Individual compression implementations
 │   ├── crypto/          # Cryptographic functionality
@@ -46,7 +56,29 @@ src/
 └── server/              # Server-side code
 ```
 
-## Default Processor Implementations
+## Default Implementations
+
+### Slice ID Generators
+- **`NanoidSliceIdGenerator`** (`src/shared/slice-id/generators.ts`) - **Default**
+  - Uses nanoid library for cryptographically secure, URL-safe unique IDs
+  - Configurable length (default 21 characters)
+  - Recommended for production use
+
+- **`UuidSliceIdGenerator`** (`src/shared/slice-id/generators.ts`)
+  - Uses standard UUID v4 format
+  - Maximum compatibility with existing systems
+
+- **`SequentialSliceIdGenerator`** (`src/shared/slice-id/generators.ts`)
+  - Generates predictable sequential IDs for debugging
+  - **WARNING: Less secure** - use only for development/debugging
+
+- **`TimestampSliceIdGenerator`** (`src/shared/slice-id/generators.ts`)
+  - Combines timestamp, session info, and slice index
+  - Provides natural ordering and time-based uniqueness
+
+- **`HashSliceIdGenerator`** (`src/shared/slice-id/generators.ts`)
+  - Generates deterministic IDs based on session and slice info
+  - Useful for caching scenarios where same input = same ID
 
 ### Compression
 - **`DeflateCompressionProcessor`** (`src/shared/compression/processors/deflate-processor.ts`)
@@ -204,6 +236,8 @@ const { encrypted, metadata } = await this.encryptionProcessor.encrypt(
 
 ### 2. Example Usage
 Always provide complete, working examples:
+
+#### Basic Usage with Default Slice ID Generator
 ```typescript
 import { 
   SecureAudioClient, 
@@ -222,6 +256,62 @@ const client = new SecureAudioClient(transport, {
 });
 ```
 
+#### Custom Slice ID Generator Usage
+```typescript
+import { 
+  SessionManager,
+  UuidSliceIdGenerator,
+  SequentialSliceIdGenerator,
+  TimestampSliceIdGenerator,
+  HashSliceIdGenerator
+} from 'secstream';
+
+// Use UUID-based slice IDs for maximum compatibility
+const sessionManager = new SessionManager({
+  sliceIdGenerator: new UuidSliceIdGenerator()
+});
+
+// Use sequential IDs for debugging (development only)
+const debugSessionManager = new SessionManager({
+  sliceIdGenerator: new SequentialSliceIdGenerator('debug')
+});
+
+// Use timestamp-based IDs for natural ordering
+const timestampSessionManager = new SessionManager({
+  sliceIdGenerator: new TimestampSliceIdGenerator()
+});
+
+// Use hash-based IDs for caching scenarios
+const cachingSessionManager = new SessionManager({
+  sliceIdGenerator: new HashSliceIdGenerator()
+});
+```
+
+#### Creating Custom Slice ID Generators
+```typescript
+import { SliceIdGenerator } from 'secstream';
+
+// Custom generator using company prefix and random suffix
+class CompanySliceIdGenerator implements SliceIdGenerator {
+  constructor(private companyPrefix: string = 'ACME') {}
+
+  generateSliceId(sliceIndex: number, sessionId: string, totalSlices: number): string {
+    const timestamp = Date.now().toString(36);
+    const random = Math.random().toString(36).slice(2, 8);
+    return `${this.companyPrefix}_${timestamp}_${sliceIndex}_${random}`;
+  }
+
+  getName(): string {
+    return `CompanySliceIdGenerator(${this.companyPrefix})`;
+  }
+}
+
+// Use custom generator
+const customSessionManager = new SessionManager({
+  sliceIdGenerator: new CompanySliceIdGenerator('MYCO')
+});
+```
+
 ## Common Pitfalls to Avoid
 
 1. **Never use `any` types** - always use proper generics
@@ -231,6 +321,9 @@ const client = new SecureAudioClient(transport, {
 5. **Never expose internal implementation details** - use proper abstraction
 6. **Don't assume key formats** - support multiple key types generically
 7. **Avoid memory leaks** - implement proper cleanup and disposal
+8. **Don't use insecure slice ID generators in production** - avoid SequentialSliceIdGenerator in production
+9. **Ensure slice ID uniqueness** - custom generators must guarantee unique IDs within a session
+10. **Consider slice ID performance** - generators are called for every slice, optimize accordingly
 
 ## Package Information
 

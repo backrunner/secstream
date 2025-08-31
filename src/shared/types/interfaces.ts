@@ -10,6 +10,27 @@ export interface AudioSlice {
   sessionId: string;
 }
 
+/**
+ * Interface for custom slice ID generation
+ * Allows users to implement their own slice ID generation strategy
+ */
+export interface SliceIdGenerator {
+  /**
+   * Generate a unique slice ID for the given slice index and session
+   * @param sliceIndex - The index of the slice (0-based)
+   * @param sessionId - The session identifier
+   * @param totalSlices - Total number of slices in the session
+   * @returns Promise<string> - A unique slice ID
+   */
+  generateSliceId: (sliceIndex: number, sessionId: string, totalSlices: number) => Promise<string> | string;
+
+  /**
+   * Get the name/identifier of this generator for logging/debugging
+   * @returns string - Name of the generator
+   */
+  getName: () => string;
+}
+
 export interface SessionInfo {
   sessionId: string;
   totalSlices: number;

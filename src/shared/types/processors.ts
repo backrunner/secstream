@@ -33,7 +33,7 @@ export interface CompressionProcessor {
    * @param options - Compression options (algorithm-specific)
    * @returns Promise<ArrayBuffer> - Compressed data
    */
-  compress(data: ArrayBuffer, options?: CompressionOptions): Promise<ArrayBuffer>;
+  compress: (data: ArrayBuffer, options?: CompressionOptions) => Promise<ArrayBuffer>;
 
   /**
    * Decompress data
@@ -41,12 +41,12 @@ export interface CompressionProcessor {
    * @param options - Decompression options (algorithm-specific)
    * @returns Promise<ArrayBuffer> - Decompressed data
    */
-  decompress(compressedData: ArrayBuffer, options?: CompressionOptions): Promise<ArrayBuffer>;
+  decompress: (compressedData: ArrayBuffer, options?: CompressionOptions) => Promise<ArrayBuffer>;
 
   /**
    * Get processor name/identifier
    */
-  getName(): string;
+  getName: () => string;
 }
 
 /**
@@ -61,7 +61,7 @@ export interface EncryptionProcessor<TKey = CryptoKey | ArrayBuffer | string> {
    * @param options - Encryption options (algorithm-specific)
    * @returns Promise with encrypted data and metadata
    */
-  encrypt(data: ArrayBuffer, key: TKey, options?: EncryptionOptions): Promise<{
+  encrypt: (data: ArrayBuffer, key: TKey, options?: EncryptionOptions) => Promise<{
     encrypted: ArrayBuffer;
     metadata: CryptoMetadata;
   }>;
@@ -74,17 +74,17 @@ export interface EncryptionProcessor<TKey = CryptoKey | ArrayBuffer | string> {
    * @param options - Decryption options (algorithm-specific)
    * @returns Promise<ArrayBuffer> - Decrypted data
    */
-  decrypt(
+  decrypt: (
     encryptedData: ArrayBuffer,
     key: TKey,
     metadata: CryptoMetadata,
     options?: EncryptionOptions
-  ): Promise<ArrayBuffer>;
+  ) => Promise<ArrayBuffer>;
 
   /**
    * Get processor name/identifier
    */
-  getName(): string;
+  getName: () => string;
 }
 
 /**
@@ -110,21 +110,21 @@ export interface KeyExchangeResponse<TData = unknown, TSessionInfo = unknown> {
  * Customizable key exchange processor interface with generic key and session types
  */
 export interface KeyExchangeProcessor<
-  TKey = CryptoKey, 
+  TKey = CryptoKey,
   TSessionInfo = unknown,
   TRequestData = unknown,
-  TResponseData = unknown
+  TResponseData = unknown,
 > {
   /**
    * Initialize the key exchange processor
    */
-  initialize(): Promise<void>;
+  initialize: () => Promise<void>;
 
   /**
    * Create a key exchange request (client side)
    * @returns Promise<KeyExchangeRequest> - Key exchange request data
    */
-  createKeyExchangeRequest(): Promise<KeyExchangeRequest<TRequestData>>;
+  createKeyExchangeRequest: () => Promise<KeyExchangeRequest<TRequestData>>;
 
   /**
    * Process key exchange request and create response (server side)
@@ -132,10 +132,10 @@ export interface KeyExchangeProcessor<
    * @param sessionId - Session identifier
    * @returns Promise with response and derived session key
    */
-  processKeyExchangeRequest(
-    request: KeyExchangeRequest<TRequestData>, 
+  processKeyExchangeRequest: (
+    request: KeyExchangeRequest<TRequestData>,
     sessionId: string
-  ): Promise<{
+  ) => Promise<{
     response: KeyExchangeResponse<TResponseData, TSessionInfo>;
     sessionKey: TKey;
   }>;
@@ -145,19 +145,19 @@ export interface KeyExchangeProcessor<
    * @param response - Key exchange response from server
    * @returns Promise<TKey> - Derived session key
    */
-  processKeyExchangeResponse(
+  processKeyExchangeResponse: (
     response: KeyExchangeResponse<TResponseData, TSessionInfo>
-  ): Promise<TKey>;
+  ) => Promise<TKey>;
 
   /**
    * Get processor name/identifier
    */
-  getName(): string;
+  getName: () => string;
 
   /**
    * Clean up resources
    */
-  destroy(): void;
+  destroy: () => void;
 }
 
 /**
@@ -166,7 +166,7 @@ export interface KeyExchangeProcessor<
 export interface ProcessingConfig<
   TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
   TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
-  TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor
+  TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor,
 > {
   compressionProcessor?: TCompressionProcessor;
   encryptionProcessor?: TEncryptionProcessor;

@@ -1,14 +1,14 @@
-import type { 
-  KeyExchangeProcessor, 
-  KeyExchangeRequest, 
-  KeyExchangeResponse 
-} from '../../types/processors.js';
 import type { SessionInfo } from '../../types/interfaces.js';
+import type {
+  KeyExchangeProcessor,
+  KeyExchangeRequest,
+  KeyExchangeResponse,
+} from '../../types/processors.js';
 import {
-  generateKeyPair,
-  exportPublicKey,
-  importPublicKey,
   deriveSharedKey,
+  exportPublicKey,
+  generateKeyPair,
+  importPublicKey,
 } from '../key-management.js';
 
 /**
@@ -26,10 +26,10 @@ export interface ECDHKeyExchangeMetadata extends Record<string, unknown> {
  * Derives AES-256-GCM session keys for secure audio streaming
  */
 export class EcdhP256KeyExchangeProcessor implements KeyExchangeProcessor<
-  CryptoKey, 
-  SessionInfo, 
+  CryptoKey,
+  SessionInfo,
   never, // No custom request data
-  never  // No custom response data
+  never
 > {
   private keyPair: CryptoKeyPair | null = null;
 
@@ -45,23 +45,23 @@ export class EcdhP256KeyExchangeProcessor implements KeyExchangeProcessor<
     }
 
     const publicKeyBase64 = await exportPublicKey(this.keyPair.publicKey);
-    
+
     return {
       publicKey: publicKeyBase64,
       metadata: {
         algorithm: 'ECDH',
         curve: 'P-256',
-        keyType: 'CryptoKey'
-      } as ECDHKeyExchangeMetadata
+        keyType: 'CryptoKey',
+      } as ECDHKeyExchangeMetadata,
     };
   }
 
   async processKeyExchangeRequest(
-    request: KeyExchangeRequest<never>, 
-    sessionId: string
-  ): Promise<{ 
-    response: KeyExchangeResponse<never, SessionInfo>; 
-    sessionKey: CryptoKey 
+    request: KeyExchangeRequest<never>,
+    sessionId: string,
+  ): Promise<{
+    response: KeyExchangeResponse<never, SessionInfo>;
+    sessionKey: CryptoKey;
   }> {
     if (!request.publicKey) {
       throw new Error('No public key in request');
@@ -83,15 +83,15 @@ export class EcdhP256KeyExchangeProcessor implements KeyExchangeProcessor<
       metadata: {
         algorithm: 'ECDH',
         curve: 'P-256',
-        keyType: 'CryptoKey'
-      } as ECDHKeyExchangeMetadata
+        keyType: 'CryptoKey',
+      } as ECDHKeyExchangeMetadata,
     };
 
     return { response, sessionKey };
   }
 
   async processKeyExchangeResponse(
-    response: KeyExchangeResponse<never, SessionInfo>
+    response: KeyExchangeResponse<never, SessionInfo>,
   ): Promise<CryptoKey> {
     if (!this.keyPair) {
       throw new Error('Key exchange processor not initialized');

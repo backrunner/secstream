@@ -19,7 +19,7 @@ export interface Transport {
    * Developer decides: request format, response parsing
    */
   performKeyExchange: <TRequestData = unknown, TResponseData = unknown, TSessionInfo = SessionInfo>(
-    sessionId: string, 
+    sessionId: string,
     request: KeyExchangeRequest<TRequestData>
   ) => Promise<KeyExchangeResponse<TResponseData, TSessionInfo>>;
 

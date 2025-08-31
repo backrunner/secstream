@@ -1,16 +1,16 @@
 import type { EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
+import type {
+  CompressionProcessor,
+  CryptoMetadata,
+  EncryptionProcessor,
+  KeyExchangeProcessor,
+  ProcessingConfig,
+} from '../../shared/types/processors.js';
 import type { RetryConfig } from '../network/retry-manager.js';
 import type { Transport } from '../network/transport.js';
-import type { 
-  CompressionProcessor, 
-  EncryptionProcessor, 
-  ProcessingConfig, 
-  KeyExchangeProcessor,
-  CryptoMetadata 
-} from '../../shared/types/processors.js';
 import { DeflateCompressionProcessor } from '../../shared/compression/processors/deflate-processor.js';
-import { AesGcmEncryptionProcessor } from '../../shared/crypto/processors/aes-gcm-processor.js';
 import { EcdhP256KeyExchangeProcessor } from '../../shared/crypto/key-exchange/ecdh-p256-processor.js';
+import { AesGcmEncryptionProcessor } from '../../shared/crypto/processors/aes-gcm-processor.js';
 import { RetryManager } from '../network/retry-manager.js';
 import {
   DecodingError,
@@ -21,7 +21,7 @@ import {
 export interface ClientConfig<
   TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
   TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
-  TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor
+  TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor,
 > {
   bufferSize: number;
   prefetchSize: number;
@@ -44,7 +44,7 @@ export class SecureAudioClient<
   TKey = unknown,
   TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
   TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
-  TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor
+  TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor,
 > {
   private keyExchangeProcessor: TKeyExchangeProcessor;
   private audioContext: AudioContext;
@@ -63,8 +63,8 @@ export class SecureAudioClient<
   private currentSlice = 0;
 
   constructor(
-    transport: Transport, 
-    config: Partial<ClientConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>> = {}
+    transport: Transport,
+    config: Partial<ClientConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>> = {},
   ) {
     this.transport = transport;
     this.config = {
@@ -75,7 +75,7 @@ export class SecureAudioClient<
     };
     this.retryManager = new RetryManager(this.config.retryConfig);
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    
+
     // Initialize processors with defaults or user-provided ones
     const processingConfig = this.config.processingConfig || {};
     this.compressionProcessor = (processingConfig.compressionProcessor || new DeflateCompressionProcessor()) as TCompressionProcessor;
@@ -250,9 +250,9 @@ export class SecureAudioClient<
     // Decrypt using configurable processor
     // Type assertion is safe here because we know the encryption processor accepts TKey type
     const compressedData = await this.encryptionProcessor.decrypt(
-      encryptedData, 
-      this.sessionKey as Parameters<TEncryptionProcessor['decrypt']>[1], 
-      metadata
+      encryptedData,
+      this.sessionKey as Parameters<TEncryptionProcessor['decrypt']>[1],
+      metadata,
     );
 
     // Decompress using configurable processor

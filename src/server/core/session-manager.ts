@@ -1,9 +1,9 @@
-import type { AudioConfig, EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
-import type { 
-  KeyExchangeRequest, 
-  KeyExchangeResponse, 
-  KeyExchangeProcessor, 
-  ProcessingConfig 
+import type { AudioConfig, EncryptedSlice, SessionInfo, SliceIdGenerator } from '../../shared/types/interfaces.js';
+import type {
+  KeyExchangeProcessor,
+  KeyExchangeRequest,
+  KeyExchangeResponse,
+  ProcessingConfig,
 } from '../../shared/types/processors.js';
 import type { Timer } from '../../shared/utils/timers.js';
 import { EcdhP256KeyExchangeProcessor } from '../../shared/crypto/key-exchange/ecdh-p256-processor.js';
@@ -31,26 +31,28 @@ interface AudioSession {
  */
 export class SessionManager {
   private sessions = new Map<string, AudioSession>();
-  private config: AudioConfig & { processingConfig?: ProcessingConfig };
+  private config: AudioConfig & { processingConfig?: ProcessingConfig; sliceIdGenerator?: SliceIdGenerator };
   private cleanupTimer: Timer | null = null;
   private keyExchangeProcessorFactory: () => KeyExchangeProcessor;
 
-  constructor(config: Partial<AudioConfig & { processingConfig?: ProcessingConfig }> = {}) {
-    this.config = { 
-      sliceDurationMs: 5000, 
-      compressionLevel: 6, 
+  constructor(
+    config: Partial<AudioConfig & { processingConfig?: ProcessingConfig; sliceIdGenerator?: SliceIdGenerator }> = {},
+  ) {
+    this.config = {
+      sliceDurationMs: 5000,
+      compressionLevel: 6,
       encryptionAlgorithm: 'AES-GCM',
-      ...config 
+      ...config,
     };
 
     // Create factory for key exchange processors
     const keyExchangeProcessor = config.processingConfig?.keyExchangeProcessor;
-    this.keyExchangeProcessorFactory = keyExchangeProcessor 
+    this.keyExchangeProcessorFactory = keyExchangeProcessor
       ? () => {
-          // Create a new instance of the same type as the provided processor
-          const ProcessorClass = keyExchangeProcessor.constructor as new () => KeyExchangeProcessor;
-          return new ProcessorClass();
-        }
+        // Create a new instance of the same type as the provided processor
+        const ProcessorClass = keyExchangeProcessor.constructor as new () => KeyExchangeProcessor;
+        return new ProcessorClass();
+      }
       : () => new EcdhP256KeyExchangeProcessor();
 
     // Clean up expired sessions every 5 minutes using cross-platform timer
@@ -87,8 +89,8 @@ export class SessionManager {
   }
 
   async handleKeyExchange<TRequestData = unknown, TResponseData = unknown>(
-    sessionId: string, 
-    request: KeyExchangeRequest<TRequestData>
+    sessionId: string,
+    request: KeyExchangeRequest<TRequestData>,
   ): Promise<KeyExchangeResponse<TResponseData, SessionInfo>> {
     const session = this.sessions.get(sessionId);
     if (!session) {

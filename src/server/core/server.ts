@@ -33,8 +33,8 @@ export class SecureAudioServer {
    * @returns Promise resolving to key exchange response
    */
   async handleKeyExchange<TRequestData = unknown, TResponseData = unknown>(
-    sessionId: string, 
-    request: KeyExchangeRequest<TRequestData>
+    sessionId: string,
+    request: KeyExchangeRequest<TRequestData>,
   ): Promise<KeyExchangeResponse<TResponseData, SessionInfo>> {
     return await this.sessionManager.handleKeyExchange(sessionId, request);
   }
