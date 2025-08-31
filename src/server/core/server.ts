@@ -1,4 +1,5 @@
-import type { EncryptedSlice, KeyExchangeRequest, KeyExchangeResponse, SessionInfo } from '../../shared/types/interfaces.js';
+import type { EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
+import type { KeyExchangeRequest, KeyExchangeResponse } from '../../shared/types/processors.js';
 import type { SessionManager } from './session-manager.js';
 
 /**
@@ -6,6 +7,7 @@ import type { SessionManager } from './session-manager.js';
  * This class only contains the essential methods - no framework-specific handlers.
  * Developers can integrate these methods into any server framework they choose.
  * Compatible with Node.js, Cloudflare Workers, and other JavaScript environments.
+ * Supports generic key exchange types for full flexibility.
  */
 export class SecureAudioServer {
   private sessionManager: SessionManager;
@@ -30,7 +32,10 @@ export class SecureAudioServer {
    * @param request - Key exchange request from client
    * @returns Promise resolving to key exchange response
    */
-  async handleKeyExchange(sessionId: string, request: KeyExchangeRequest): Promise<KeyExchangeResponse> {
+  async handleKeyExchange<TRequestData = unknown, TResponseData = unknown>(
+    sessionId: string, 
+    request: KeyExchangeRequest<TRequestData>
+  ): Promise<KeyExchangeResponse<TResponseData, SessionInfo>> {
     return await this.sessionManager.handleKeyExchange(sessionId, request);
   }
 

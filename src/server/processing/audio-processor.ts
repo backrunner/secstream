@@ -1,7 +1,14 @@
 import type { AudioConfig, EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
 import type { AudioMetadata } from '../audio/format-parser.js';
-import { compressData } from '../../shared/compression/data-compression.js';
-import { encryptData } from '../../shared/crypto/encryption.js';
+import type { 
+  CompressionProcessor, 
+  EncryptionProcessor, 
+  ProcessingConfig,
+  CompressionOptions,
+  CryptoMetadata
+} from '../../shared/types/processors.js';
+import { DeflateCompressionProcessor } from '../../shared/compression/processors/deflate-processor.js';
+import { AesGcmEncryptionProcessor } from '../../shared/crypto/processors/aes-gcm-processor.js';
 import { estimateSampleCount, extractAudioData, parseAudioMetadata } from '../audio/format-parser.js';
 
 export interface AudioSource {
@@ -13,29 +20,48 @@ export interface AudioSource {
   metadata: AudioMetadata;
 }
 
+export interface AudioProcessorConfig<
+  TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
+  TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor
+> extends Partial<AudioConfig> {
+  processingConfig?: ProcessingConfig<TCompressionProcessor, TEncryptionProcessor>;
+}
+
 /**
  * Processes audio files into encrypted slices for secure streaming
  * Handles audio decoding, slicing, compression, and encryption
  * Supports WAV, MP3, FLAC, and other audio formats
  * Compatible with Node.js, Cloudflare Workers, and other JavaScript environments
+ * Supports customizable compression and encryption processors
  *
  * Provides pure binary data - transport encoding is developer's responsibility
  */
-export class AudioProcessor {
-  private config: AudioConfig;
+export class AudioProcessor<
+  TKey = unknown,
+  TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
+  TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor
+> {
+  private readonly config: AudioConfig;
+  private readonly compressionProcessor: TCompressionProcessor;
+  private readonly encryptionProcessor: TEncryptionProcessor;
 
-  constructor(config: Partial<AudioConfig> = {}) {
+  constructor(config: AudioProcessorConfig<TCompressionProcessor, TEncryptionProcessor> = {}) {
     this.config = {
       sliceDurationMs: 5000,
       compressionLevel: 6,
       encryptionAlgorithm: 'AES-GCM',
       ...config,
     };
+    
+    // Initialize processors with defaults or user-provided ones
+    const processingConfig = config.processingConfig || {};
+    this.compressionProcessor = (processingConfig.compressionProcessor || new DeflateCompressionProcessor()) as TCompressionProcessor;
+    this.encryptionProcessor = (processingConfig.encryptionProcessor || new AesGcmEncryptionProcessor()) as TEncryptionProcessor;
   }
 
   async processAudio(
     audioData: ArrayBuffer | ReadableStream,
-    sessionKey: CryptoKey,
+    sessionKey: TKey,
     sessionId: string,
   ): Promise<{ sessionInfo: SessionInfo; getSlice: (sliceId: string) => Promise<EncryptedSlice | null> }> {
     // Convert input to AudioBuffer-like data
@@ -86,7 +112,7 @@ export class AudioProcessor {
   private async prepareSlice(
     audioSource: AudioSource,
     sliceIndex: number,
-    sessionKey: CryptoKey,
+    sessionKey: TKey,
     sessionId: string,
     samplesPerSlice: number,
   ): Promise<EncryptedSlice> {
@@ -97,21 +123,32 @@ export class AudioProcessor {
     // Extract slice data efficiently
     const sliceData = this.extractAudioSlice(audioSource, startSample, endSample);
 
-    // Compress the slice
-    const compressedData = await compressData(sliceData, this.config.compressionLevel);
+    // Compress the slice using configurable processor
+    const compressionOptions: CompressionOptions = { level: this.config.compressionLevel };
+    const compressedData = await this.compressionProcessor.compress(sliceData, compressionOptions);
 
-    // Encrypt the compressed slice
-    const { encrypted, iv } = await encryptData(sessionKey, compressedData);
+    // Encrypt the compressed slice using configurable processor
+    const { encrypted, metadata } = await this.encryptionProcessor.encrypt(
+      compressedData, 
+      sessionKey as Parameters<TEncryptionProcessor['encrypt']>[1]
+    );
 
     // Return pure binary data - no base64, no hashes
     // Developer handles transport encoding and validation as needed
     return {
       id: sliceId,
       encryptedData: encrypted, // Pure ArrayBuffer
-      iv, // Pure ArrayBuffer
+      iv: this.extractIV(metadata), // Extract IV from metadata for backward compatibility
       sequence: sliceIndex,
       sessionId,
     };
+  }
+
+  private extractIV(metadata: CryptoMetadata): ArrayBuffer {
+    if (!metadata.iv || !(metadata.iv instanceof ArrayBuffer)) {
+      throw new Error('Invalid or missing IV in metadata');
+    }
+    return metadata.iv;
   }
 
   private manageSliceCache(

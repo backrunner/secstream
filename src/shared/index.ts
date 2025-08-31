@@ -1,6 +1,16 @@
-// Core shared functionality re-exports
-export * from './compression/data-compression.js';
-export * from './crypto/encryption.js';
-export * from './crypto/key-exchange.js';
-export * from './types/interfaces.js';
-export * from './utils/timers.js';
+/**
+ * Shared functionality for audio-secure-transfer
+ * Organized by feature areas with proper type safety
+ */
+
+// Core type definitions
+export * from './types/index.js';
+
+// Compression functionality
+export * from './compression/index.js';
+
+// Cryptographic functionality  
+export * from './crypto/index.js';
+
+// Utility functions
+export * from './utils/index.js';

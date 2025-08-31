@@ -19,14 +19,15 @@ export interface SessionInfo {
   bitDepth?: number;
 }
 
-export interface KeyExchangeRequest {
+// Legacy key exchange interfaces - marked for backward compatibility
+export interface LegacyKeyExchangeRequest {
   clientPublicKey: string;
 }
 
-export interface KeyExchangeResponse {
+export interface LegacyKeyExchangeResponse {
   serverPublicKey: string;
-  encryptedSessionKey: string;
-  iv: string; // IV for session key decryption
+  encryptedSessionKey?: string; // Optional for backward compatibility
+  iv?: string; // Optional for backward compatibility
   sessionInfo: SessionInfo;
 }
 

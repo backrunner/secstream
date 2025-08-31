@@ -1,9 +1,16 @@
 import type { EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
 import type { RetryConfig } from '../network/retry-manager.js';
 import type { Transport } from '../network/transport.js';
-import { decompressData } from '../../shared/compression/data-compression.js';
-import { decryptData } from '../../shared/crypto/encryption.js';
-import { KeyExchangeManager } from '../../shared/crypto/key-exchange.js';
+import type { 
+  CompressionProcessor, 
+  EncryptionProcessor, 
+  ProcessingConfig, 
+  KeyExchangeProcessor,
+  CryptoMetadata 
+} from '../../shared/types/processors.js';
+import { DeflateCompressionProcessor } from '../../shared/compression/processors/deflate-processor.js';
+import { AesGcmEncryptionProcessor } from '../../shared/crypto/processors/aes-gcm-processor.js';
+import { EcdhP256KeyExchangeProcessor } from '../../shared/crypto/key-exchange/ecdh-p256-processor.js';
 import { RetryManager } from '../network/retry-manager.js';
 import {
   DecodingError,
@@ -11,10 +18,15 @@ import {
   NetworkError,
 } from '../network/transport.js';
 
-export interface ClientConfig {
+export interface ClientConfig<
+  TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
+  TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
+  TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor
+> {
   bufferSize: number;
   prefetchSize: number;
   retryConfig: Partial<RetryConfig>;
+  processingConfig?: ProcessingConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>;
 }
 
 export interface AudioSliceData {
@@ -26,23 +38,34 @@ export interface AudioSliceData {
  * Secure audio client for encrypted audio streaming
  * Handles key exchange, session management, and buffer strategies
  * Uses pluggable transport interface for flexibility
+ * Supports customizable compression and encryption processors
  */
-export class SecureAudioClient {
-  private keyManager = new KeyExchangeManager();
+export class SecureAudioClient<
+  TKey = unknown,
+  TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
+  TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
+  TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor
+> {
+  private keyExchangeProcessor: TKeyExchangeProcessor;
   private audioContext: AudioContext;
   private transport: Transport;
   private retryManager: RetryManager;
+  private compressionProcessor: TCompressionProcessor;
+  private encryptionProcessor: TEncryptionProcessor;
 
-  public config: ClientConfig;
+  public config: ClientConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>;
   private sessionInfo: SessionInfo | null = null;
-  private sessionKey: CryptoKey | null = null;
+  private sessionKey: TKey | null = null;
 
   // Buffer management
   private audioBuffers = new Map<number, AudioSliceData>();
   private playedSlices = new Set<number>();
   private currentSlice = 0;
 
-  constructor(transport: Transport, config: Partial<ClientConfig> = {}) {
+  constructor(
+    transport: Transport, 
+    config: Partial<ClientConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>> = {}
+  ) {
     this.transport = transport;
     this.config = {
       bufferSize: 5,
@@ -52,6 +75,12 @@ export class SecureAudioClient {
     };
     this.retryManager = new RetryManager(this.config.retryConfig);
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    
+    // Initialize processors with defaults or user-provided ones
+    const processingConfig = this.config.processingConfig || {};
+    this.compressionProcessor = (processingConfig.compressionProcessor || new DeflateCompressionProcessor()) as TCompressionProcessor;
+    this.encryptionProcessor = (processingConfig.encryptionProcessor || new AesGcmEncryptionProcessor()) as TEncryptionProcessor;
+    this.keyExchangeProcessor = (processingConfig.keyExchangeProcessor || new EcdhP256KeyExchangeProcessor()) as TKeyExchangeProcessor;
   }
 
   /**
@@ -74,10 +103,10 @@ export class SecureAudioClient {
    */
   async initializeSession(sessionId: string): Promise<SessionInfo> {
     // Initialize key exchange
-    await this.keyManager.initialize();
+    await this.keyExchangeProcessor.initialize();
 
     // Create key exchange request
-    const keyExchangeRequest = await this.keyManager.createKeyExchangeRequest();
+    const keyExchangeRequest = await this.keyExchangeProcessor.createKeyExchangeRequest();
 
     // Perform key exchange with retry
     const keyExchangeResponse = await this.retryManager.retry(async() => {
@@ -89,7 +118,7 @@ export class SecureAudioClient {
     });
 
     // Process key exchange response
-    this.sessionKey = await this.keyManager.processKeyExchangeResponse(keyExchangeResponse);
+    this.sessionKey = await this.keyExchangeProcessor.processKeyExchangeResponse(keyExchangeResponse) as TKey;
     this.sessionInfo = keyExchangeResponse.sessionInfo;
 
     return this.sessionInfo;
@@ -197,7 +226,7 @@ export class SecureAudioClient {
   }
 
   /**
-   * Decrypt slice data
+   * Decrypt slice data using configurable processor
    */
   private async decryptSlice(encryptedSlice: EncryptedSlice): Promise<ArrayBuffer> {
     if (!this.sessionKey) {
@@ -206,13 +235,18 @@ export class SecureAudioClient {
 
     // Data is binary - no encoding conversion needed
     const encryptedData = encryptedSlice.encryptedData;
-    const iv = encryptedSlice.iv;
+    const metadata: CryptoMetadata = { iv: encryptedSlice.iv };
 
-    // Decrypt
-    const compressedData = await decryptData(this.sessionKey, encryptedData, iv);
+    // Decrypt using configurable processor
+    // Type assertion is safe here because we know the encryption processor accepts TKey type
+    const compressedData = await this.encryptionProcessor.decrypt(
+      encryptedData, 
+      this.sessionKey as Parameters<TEncryptionProcessor['decrypt']>[1], 
+      metadata
+    );
 
-    // Decompress
-    const audioData = await decompressData(compressedData);
+    // Decompress using configurable processor
+    const audioData = await this.compressionProcessor.decompress(compressedData);
 
     return audioData;
   }
@@ -303,7 +337,7 @@ export class SecureAudioClient {
 
   // Clean up resources
   destroy(): void {
-    this.keyManager.destroy();
+    this.keyExchangeProcessor.destroy();
     this.audioBuffers.clear();
     this.playedSlices.clear();
 

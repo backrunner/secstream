@@ -1,14 +1,21 @@
-import type { AudioConfig, EncryptedSlice, KeyExchangeRequest, KeyExchangeResponse, SessionInfo } from '../../shared/types/interfaces.js';
+import type { AudioConfig, EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
+import type { 
+  KeyExchangeRequest, 
+  KeyExchangeResponse, 
+  KeyExchangeProcessor, 
+  ProcessingConfig 
+} from '../../shared/types/processors.js';
 import type { Timer } from '../../shared/utils/timers.js';
-import { KeyExchangeManager } from '../../shared/crypto/key-exchange.js';
+import { EcdhP256KeyExchangeProcessor } from '../../shared/crypto/key-exchange/ecdh-p256-processor.js';
 import { createInterval } from '../../shared/utils/timers.js';
 import { AudioProcessor } from '../processing/audio-processor.js';
 
 interface AudioSession {
   id: string;
-  keyManager: KeyExchangeManager;
+  keyExchangeProcessor: KeyExchangeProcessor;
   processor: AudioProcessor;
   sessionInfo: SessionInfo;
+  sessionKey?: any;
   getSlice: (sliceId: string) => Promise<EncryptedSlice | null>;
   createdAt: Date;
   lastAccessed: Date;
@@ -20,14 +27,31 @@ interface AudioSession {
  * Manages audio sessions including key exchange and audio processing
  * Handles session lifecycle, cleanup, and statistics
  * Compatible with Node.js, Cloudflare Workers, and other JavaScript environments
+ * Supports customizable compression, encryption, and key exchange processors
  */
 export class SessionManager {
   private sessions = new Map<string, AudioSession>();
-  private config: AudioConfig;
+  private config: AudioConfig & { processingConfig?: ProcessingConfig };
   private cleanupTimer: Timer | null = null;
+  private keyExchangeProcessorFactory: () => KeyExchangeProcessor;
 
-  constructor(config: Partial<AudioConfig> = {}) {
-    this.config = { ...{ sliceDurationMs: 5000, compressionLevel: 6, encryptionAlgorithm: 'AES-GCM' }, ...config };
+  constructor(config: Partial<AudioConfig & { processingConfig?: ProcessingConfig }> = {}) {
+    this.config = { 
+      sliceDurationMs: 5000, 
+      compressionLevel: 6, 
+      encryptionAlgorithm: 'AES-GCM',
+      ...config 
+    };
+
+    // Create factory for key exchange processors
+    const keyExchangeProcessor = config.processingConfig?.keyExchangeProcessor;
+    this.keyExchangeProcessorFactory = keyExchangeProcessor 
+      ? () => {
+          // Create a new instance of the same type as the provided processor
+          const ProcessorClass = keyExchangeProcessor.constructor as new () => KeyExchangeProcessor;
+          return new ProcessorClass();
+        }
+      : () => new EcdhP256KeyExchangeProcessor();
 
     // Clean up expired sessions every 5 minutes using cross-platform timer
     this.cleanupTimer = createInterval(() => {
@@ -38,17 +62,17 @@ export class SessionManager {
   async createSession(audioData: ArrayBuffer | ReadableStream): Promise<string> {
     const sessionId = this.generateSessionId();
 
-    // Initialize key exchange manager
-    const keyManager = new KeyExchangeManager();
-    await keyManager.initialize();
+    // Initialize key exchange processor
+    const keyExchangeProcessor = this.keyExchangeProcessorFactory();
+    await keyExchangeProcessor.initialize();
 
-    // Create audio processor
+    // Create audio processor with customizable processors
     const processor = new AudioProcessor(this.config);
 
     // Store session info temporarily (will be completed after key exchange)
     const session: Partial<AudioSession> = {
       id: sessionId,
-      keyManager,
+      keyExchangeProcessor,
       processor,
       createdAt: new Date(),
       lastAccessed: new Date(),
@@ -62,29 +86,20 @@ export class SessionManager {
     return sessionId;
   }
 
-  async handleKeyExchange(sessionId: string, request: KeyExchangeRequest): Promise<KeyExchangeResponse> {
+  async handleKeyExchange<TRequestData = unknown, TResponseData = unknown>(
+    sessionId: string, 
+    request: KeyExchangeRequest<TRequestData>
+  ): Promise<KeyExchangeResponse<TResponseData, SessionInfo>> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    // Process the audio now that we have the session key
-    const audioData = (session as any).audioData;
-    if (!audioData) {
-      throw new Error('Audio data not found for session');
-    }
+    // Process the key exchange request
+    const { response, sessionKey } = await session.keyExchangeProcessor.processKeyExchangeRequest(request, sessionId);
 
-    // First, we need to create a temporary session info for the key exchange
-    // We'll update it with the real info after processing
-    const tempSessionInfo: SessionInfo = {
-      sessionId,
-      totalSlices: 0,
-      sliceDuration: this.config.sliceDurationMs,
-      sampleRate: 44100, // Will be updated
-      channels: 2, // Will be updated
-    };
-
-    const response = await session.keyManager.handleKeyExchangeRequest(request, tempSessionInfo);
+    // Store the session key
+    session.sessionKey = sessionKey;
 
     // Mark key exchange as complete and process audio immediately
     session.keyExchangeComplete = true;
@@ -123,7 +138,7 @@ export class SessionManager {
       return;
     }
 
-    const sessionKey = session.keyManager.getSessionKey();
+    const sessionKey = session.sessionKey;
     if (!sessionKey) {
       throw new Error('Session key not available');
     }
@@ -150,7 +165,7 @@ export class SessionManager {
   destroySession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session) {
-      session.keyManager.destroy();
+      session.keyExchangeProcessor.destroy();
       this.sessions.delete(sessionId);
     }
   }

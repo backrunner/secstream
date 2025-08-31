@@ -1,5 +1,5 @@
-// Cryptographic utilities for secure audio streaming
-// Provides ECDH key exchange and AES-GCM encryption/decryption functions
+// Cryptographic key management utilities for secure audio streaming
+// Provides ECDH key exchange and AES-GCM key generation/management functions
 
 export async function generateKeyPair(): Promise<CryptoKeyPair> {
   return await crypto.subtle.generateKey(
@@ -55,30 +55,6 @@ export async function generateSessionKey(): Promise<CryptoKey> {
     },
     true,
     ['encrypt', 'decrypt'],
-  );
-}
-
-export async function encryptData(key: CryptoKey, data: ArrayBuffer): Promise<{ encrypted: ArrayBuffer; iv: ArrayBuffer }> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = await crypto.subtle.encrypt(
-    {
-      name: 'AES-GCM',
-      iv,
-    },
-    key,
-    data,
-  );
-  return { encrypted, iv: iv.buffer };
-}
-
-export async function decryptData(key: CryptoKey, encryptedData: ArrayBuffer, iv: ArrayBuffer): Promise<ArrayBuffer> {
-  return await crypto.subtle.decrypt(
-    {
-      name: 'AES-GCM',
-      iv,
-    },
-    key,
-    encryptedData,
   );
 }
 
