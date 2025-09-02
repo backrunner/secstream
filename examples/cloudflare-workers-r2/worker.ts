@@ -1,7 +1,7 @@
-// For development - these imports would be 'secstream/server' when using the published package
-import { SessionManager } from '../../src/server/core/session-manager.js'
-import { SecureAudioServer } from '../../src/server/core/server.js'
-import { parseAudioMetadata } from '../../src/server/audio/format-parser.js'
+// Secure audio streaming with R2 integration using SecStream package
+import { SessionManager } from 'secstream/server'
+import { SecureAudioServer } from 'secstream/server'
+import { parseAudioMetadata } from 'secstream/server'
 
 export interface Env {
   AUDIO_BUCKET: R2Bucket

@@ -61,7 +61,14 @@
 
             <div class="player">
                 <div class="controls">
-                    <button class="play-btn" id="playBtn"></button>
+                    <button class="play-btn" id="playBtn">
+                        <svg class="play-icon" viewBox="0 0 24 24" width="30" height="30">
+                            <path fill="currentColor" d="M8 5v14l11-7z"/>
+                        </svg>
+                        <svg class="pause-icon" viewBox="0 0 24 24" width="30" height="30">
+                            <path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                        </svg>
+                    </button>
                     <div class="time-display">
                         <span id="currentTime">0:00</span> / <span id="totalTime">0:00</span>
                     </div>
@@ -104,7 +111,7 @@
                     <div class="stats-grid">
                         <div class="stat-item">
                             <span class="stat-value" id="bufferSize">0</span>
-                            <span class="stat-label">Buffer Size</span>
+                            <span class="stat-label">Buffered Slices</span>
                         </div>
                         <div class="stat-item">
                             <span class="stat-value" id="totalSlices">0</span>
@@ -167,6 +174,14 @@
         let bufferStatsInterval = null;
         let networkRequestCount = 0;
         let currentSeekOperationId = 0; // Track current seek operation ID
+
+        // Track network requests by wrapping fetch calls
+        const originalFetch = window.fetch;
+        window.fetch = function(...args) {
+            networkRequestCount++;
+            networkRequestsEl.textContent = networkRequestCount;
+            return originalFetch.apply(this, args);
+        };
 
         // DOM elements
         const uploadArea = document.getElementById('uploadArea');
@@ -237,9 +252,12 @@
             return `${mins}:${secs.toString().padStart(2, '0')}`;
         }
 
-        function updateNetworkRequestCount() {
-            networkRequestCount++;
-            networkRequestsEl.textContent = networkRequestCount;
+        function setPlayButtonState(isPlaying) {
+            if (isPlaying) {
+                playBtn.classList.add('playing');
+            } else {
+                playBtn.classList.remove('playing');
+            }
         }
 
         async function handleFile(file) {
@@ -287,7 +305,6 @@
                 });
 
                 showStatus('info', '🔐 Creating secure session...');
-                updateNetworkRequestCount();
 
                 // Create session with the audio file
                 console.log('📤 Attempting to create session...');
@@ -307,7 +324,6 @@
                 }
 
                 showStatus('info', '🔑 Performing key exchange...');
-                updateNetworkRequestCount();
 
                 // Perform key exchange and initialize session
                 console.log('🔑 Attempting key exchange and session initialization...');
@@ -473,7 +489,7 @@
         function setupSecStreamPlayer() {
             if (!securePlayer) return;
 
-            playBtn.classList.remove('playing');
+            setPlayButtonState(false);
             playBtn.onclick = toggleSecStreamPlay;
 
             // Set total time
@@ -484,19 +500,19 @@
 
             // Set up player events
             securePlayer.addEventListener('play', () => {
-                playBtn.classList.add('playing');
+                setPlayButtonState(true);
                 startBufferStatsUpdates();
                 showStatus('info', '▶️ Playing encrypted stream...');
             });
 
             securePlayer.addEventListener('pause', () => {
-                playBtn.classList.remove('playing');
+                setPlayButtonState(false);
                 stopBufferStatsUpdates(); // Stop buffer updates when paused
                 showStatus('info', '⏸️ Secure playback paused');
             });
 
             securePlayer.addEventListener('ended', () => {
-                playBtn.classList.remove('playing');
+                setPlayButtonState(false);
 
                 // Update progress bar to 100% completion before stopping updates
                 progressFill.style.width = '100%';
@@ -593,7 +609,6 @@
                     // Only show success if not superseded
                     if (currentSeekOperationId === operationId) {
                         showStatus('success', `✅ Seeked to ${formatTime(targetTime)}`);
-                        updateNetworkRequestCount(); // Seeking may trigger network requests
                     }
                 } catch (seekError) {
                     // Only handle errors if operation wasn't superseded
@@ -608,9 +623,14 @@
         function setupWebAudioPlayer() {
             if (!currentAudio) return;
 
-            playBtn.classList.remove('playing');
+            setPlayButtonState(false);
             playBtn.onclick = toggleWebAudioPlay;
             totalTime.textContent = formatTime(currentAudio.duration);
+            
+            // Set fallback stats for Web Audio mode
+            bufferSizeEl.textContent = 'N/A';
+            networkRequestsEl.textContent = '0';
+            currentStrategyEl.textContent = 'web-audio/local';
 
             // Progress bar seeking
             progressBar.onclick = (e) => {
@@ -660,7 +680,6 @@
                     }
 
                     await securePlayer.play();
-                    updateNetworkRequestCount(); // Playing triggers network requests
                     showStatus('info', '▶️ Playing secure stream');
                 }
             } catch (error) {
@@ -668,19 +687,19 @@
                 console.error('Playback control error details:', error);
 
                 // Reset button state on error
-                playBtn.classList.remove('playing');
+                setPlayButtonState(false);
             }
         }
 
         async function toggleWebAudioPlay() {
             // Web Audio fallback implementation
             if (isPlaying) {
-                playBtn.classList.remove('playing');
+                setPlayButtonState(false);
                 isPlaying = false;
                 stopProgressUpdates();
                 showStatus('info', '⏸️ Web Audio playback paused (simulated)');
             } else {
-                playBtn.classList.add('playing');
+                setPlayButtonState(true);
                 isPlaying = true;
                 startProgressUpdates();
                 showStatus('info', '▶️ Web Audio playback started (simulated)');
@@ -731,7 +750,9 @@
                     currentTime.textContent = formatTime(newSeconds);
 
                     if (newSeconds >= currentAudio.duration) {
-                        toggleWebAudioPlay();
+                        setPlayButtonState(false);
+                        isPlaying = false;
+                        stopProgressUpdates();
                         showStatus('success', '🎵 Web Audio playback completed (simulated)');
                     }
                 }
@@ -751,18 +772,29 @@
             if (securePlayer && isSecStreamAvailable) {
                 bufferStatsInterval = setInterval(() => {
                     try {
+                        // Get buffer stats from player
                         const stats = securePlayer.getBufferStats();
-                        bufferSizeEl.textContent = stats.bufferSize || 0;
-
-                        // Update network request count based on real activity
-                        if (stats.newRequests) {
-                            networkRequestCount += stats.newRequests;
-                            networkRequestsEl.textContent = networkRequestCount;
-                        }
+                        
+                        // Update buffer size (number of loaded slices)
+                        const bufferSize = stats && typeof stats.bufferSize === 'number' ? stats.bufferSize : 0;
+                        bufferSizeEl.textContent = `${bufferSize} slices`;
+                        
+                        // Also update current slice information for better debugging
+                        console.debug('Buffer stats:', {
+                            bufferSize,
+                            currentSlice: securePlayer.currentSlice,
+                            isPlaying: securePlayer.isPlaying,
+                            currentTime: securePlayer.currentTime
+                        });
                     } catch (error) {
                         console.warn('Error getting buffer stats:', error);
+                        // Fallback to showing 0 if there's an error
+                        bufferSizeEl.textContent = '0 slices';
                     }
                 }, 1000);
+            } else {
+                // In fallback mode, show N/A
+                bufferSizeEl.textContent = 'N/A';
             }
         }
 

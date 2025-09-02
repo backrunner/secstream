@@ -8,8 +8,10 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "typecheck": "tsc --noEmit",
-    "install": "pnpm install"
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "secstream": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240909.0",

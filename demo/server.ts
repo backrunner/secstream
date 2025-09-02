@@ -4,8 +4,8 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { readFile } from 'node:fs/promises';
-import { SessionManager } from '../dist/server/index.js';
-import { parseAudioMetadata } from '../dist/server/index.js';
+import { SessionManager } from 'secstream/server';
+import { parseAudioMetadata } from 'secstream/server';
 import { calculateSliceCrc32 } from './utils/crc32.js';
 
 const app = new Hono();

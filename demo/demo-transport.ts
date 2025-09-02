@@ -1,5 +1,6 @@
-import type { Transport, KeyExchangeRequest, KeyExchangeResponse } from '../dist/client/index.js';
-import type { EncryptedSlice, SessionInfo } from '../dist/shared/index.js';
+import type { Transport } from 'secstream/client';
+import type { ProcessorKeyExchangeRequest as KeyExchangeRequest, ProcessorKeyExchangeResponse as KeyExchangeResponse } from 'secstream';
+import type { EncryptedSlice, SessionInfo } from 'secstream';
 import { verifySliceCrc32 } from './utils/crc32.js';
 
 /**
@@ -38,10 +39,10 @@ export class DemoTransport implements Transport {
     return result.sessionId;
   }
 
-  async performKeyExchange<TRequestData = unknown, TResponseData = unknown>(
+  async performKeyExchange<TRequestData = unknown, TResponseData = unknown, TSessionInfo = SessionInfo>(
     sessionId: string, 
     request: KeyExchangeRequest<TRequestData>
-  ): Promise<KeyExchangeResponse<TResponseData, SessionInfo>> {
+  ): Promise<KeyExchangeResponse<TResponseData, TSessionInfo>> {
     const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}/key-exchange`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
