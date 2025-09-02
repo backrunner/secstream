@@ -7,10 +7,10 @@ A complete runnable demo showcasing SecStream's secure audio streaming capabilit
 ```bash
 # Install dependencies
 cd demo
-npm install
+pnpm install
 
 # Start development server
-npm run dev
+pnpm run dev
 
 # Open browser
 open http://localhost:3000
@@ -75,23 +75,23 @@ demo/
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Start development server (auto-reload)
-npm run dev
+pnpm run dev
 
 # Build for production
-npm run build
+pnpm run build
 
 # Start production server
-npm start
+pnpm start
 ```
 
 ## 🌐 Deployment
 
 The demo server can be deployed to various platforms:
 
-- **Node.js**: Direct deployment with `npm start`
+- **Node.js**: Direct deployment with `pnpm start`
 - **Docker**: Containerized deployment
 - **Cloudflare Workers**: Edge deployment (modify imports)
 - **Vercel/Netlify**: Serverless deployment

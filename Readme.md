@@ -1,6 +1,6 @@
 # SecStream 🔐🎵
 
-A secure audio streaming library that prevents client-side audio piracy through encryption, slicing, memory protection, and customizable processing components.
+A secure audio streaming library that prevents client-side audio piracy through encryption, slicing, and customizable processing components.
 
 [![npm version](https://badge.fury.io/js/secstream.svg)](https://badge.fury.io/js/secstream)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -8,7 +8,7 @@ A secure audio streaming library that prevents client-side audio piracy through 
 
 ## ✨ Features
 
-- 🔐 **End-to-End Encryption**: ECDH key exchange with AES-GCM encryption
+- 🔐 **End-to-End Encryption**: ECDH key exchange with AES-GCM encryption by default
 - 🎵 **Multi-Format Audio**: WAV, MP3, FLAC, and OGG support
 - 🎵 **Secure Audio Slicing**: Encrypted chunks prevent piracy
 - 🛡️ **Memory Protection**: Buffer disposal prevents audio extraction
@@ -242,6 +242,35 @@ player.addEventListener('ended', () => console.log('Finished'))
 
 ## 🔒 Security Architecture
 
+⚠️ **Important Security Disclaimer**
+
+**SecStream is NOT Digital Rights Management (DRM)**. It provides **content protection** to raise the barrier for audio piracy, but determined attackers with sufficient technical knowledge can still extract content. SecStream is designed to:
+
+- Make casual piracy significantly more difficult
+- Prevent direct file downloads and simple extraction
+- Add technical friction to the piracy process
+- Require understanding of encryption protocols to extract content
+
+**What SecStream does:**
+- ✅ Encrypts audio slices with unique session keys
+- ✅ Prevents direct access to complete audio files
+- ✅ Makes memory extraction more complex
+- ✅ Requires protocol knowledge to reconstruct content
+- ✅ Suitable for reasonable protection against casual piracy
+
+**What SecStream does NOT do:**
+- ❌ Provide legal protection or enforcement mechanisms
+- ❌ Stop determined attackers with reverse engineering skills
+- ❌ Prevent screen recording, audio capture, or analog extraction
+- ❌ Replace professional DRM solutions or content licensing
+- ❌ Guarantee content cannot be extracted by sophisticated users
+
+**For stronger protection, consider professional DRM solutions:**
+- Widevine, FairPlay, PlayReady for enterprise-grade protection
+- Content delivery networks with robust token authentication
+- Legal agreements, terms of service, and enforcement mechanisms
+- Audio watermarking and content fingerprinting systems
+
 ### Key Exchange Protocol
 
 1. **Client Request**: Client generates ECDH key pair and sends public key
@@ -256,13 +285,14 @@ player.addEventListener('ended', () => console.log('Finished'))
 4. **Memory Protection**: Played slices immediately disposed from memory
 5. **Network Security**: All transfers over HTTPS with additional encryption
 
-### Anti-Piracy Features
+### Content Protection Features
 
-- **No Full Audio**: Client never has access to complete unencrypted audio
-- **Memory Disposal**: Played buffers cleared immediately  
-- **Key Rotation**: Unique session keys prevent replay attacks
-- **Slice Encryption**: Individual slices useless without session key
-- **Server-Side Processing**: Audio processing happens server-side only
+- **No Complete Audio**: Client never has access to full unencrypted audio files
+- **Memory Disposal**: Played audio buffers cleared immediately from memory
+- **Session Isolation**: Unique session keys prevent cross-session attacks
+- **Slice Encryption**: Individual encrypted slices are useless without session keys
+- **Server-Side Processing**: All audio processing and encryption happens server-side
+- **Protocol Obfuscation**: Custom protocol makes automated extraction more difficult
 
 ## 🌐 Framework Support
 
@@ -292,33 +322,47 @@ const api = new SecureAudioAPI(sessionManager)
 app.all('/api/*', honoHandler(api))
 ```
 
-### Cloudflare Workers
+### Cloudflare Workers + R2
 
 ```typescript
-import { SessionManager, SecureAudioAPI, parseAudioMetadata } from 'secstream/server'
+import { SessionManager, SecureAudioServer, parseAudioMetadata } from 'secstream/server'
+
+export interface Env {
+  AUDIO_BUCKET: R2Bucket
+}
 
 export default {
-  async fetch(request, env, ctx) {
-    if (request.method === 'POST' && url.pathname === '/upload') {
-      const formData = await request.formData()
-      const audioFile = formData.get('audio')
-      const audioBuffer = await audioFile.arrayBuffer()
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url)
+    const sessionManager = new SessionManager()
+    const api = new SecureAudioServer(sessionManager)
 
-      // Detect audio format
+    // Create session from R2-stored audio file
+    if (request.method === 'POST' && url.pathname === '/api/sessions/from-r2') {
+      const { key } = await request.json()
+      
+      // Retrieve audio from R2
+      const object = await env.AUDIO_BUCKET.get(key)
+      if (!object) {
+        return new Response('Audio file not found', { status: 404 })
+      }
+      
+      const audioBuffer = await object.arrayBuffer()
       const metadata = parseAudioMetadata(audioBuffer)
-      console.log(`Detected format: ${metadata.format}`)
-
-      // Create session
-      const sessionManager = new SessionManager()
-      const sessionId = await sessionManager.createSession(audioBuffer)
-
+      const { sessionId } = await api.createSession(audioBuffer)
+      
       return new Response(JSON.stringify({ sessionId, metadata }))
+    }
+
+    // Standard SecStream API endpoints
+    if (url.pathname.startsWith('/api/sessions')) {
+      // Route to SecureAudioServer...
     }
   }
 }
 ```
 
-**See [examples/CLOUDFLARE_WORKERS.md](examples/CLOUDFLARE_WORKERS.md) for complete integration guide.**
+**Complete Example**: See `examples/cloudflare-workers-r2/` for a full implementation with R2 integration, CORS handling, and production configurations.
 
 ## 🧪 Testing
 
@@ -345,8 +389,8 @@ Try the live demo to see SecStream in action:
 
 ```bash
 cd demo
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 # Open http://localhost:3000
 ```
 
@@ -380,47 +424,6 @@ const client = new SecStreamClient({
 })
 ```
 
-## 🚀 Production Deployment
-
-### Performance Considerations
-
-- **Audio Format**: WAV provides best performance, MP3/FLAC require more processing
-- **Slice Duration**: Balance security (shorter) vs. performance (longer)
-- **Slice ID Generation**: Choose appropriate generator for your use case:
-  - **NanoidSliceIdGenerator**: Best balance of security and performance (default)
-  - **UuidSliceIdGenerator**: Good compatibility, slightly slower than nanoid
-  - **SequentialSliceIdGenerator**: Fastest generation, but less secure (development only)
-  - **TimestampSliceIdGenerator**: Fast with natural ordering
-  - **HashSliceIdGenerator**: Slower due to hashing, but deterministic
-- **Compression**: Higher compression saves bandwidth but uses more CPU
-- **Buffer Size**: More buffering = smoother playback but more memory usage
-- **CDN**: Use CDN for static assets, direct connection for API
-- **Edge Computing**: Deploy on Cloudflare Workers for global performance
-- **Audio Seeking**: Optimized seeking algorithm provides accurate positioning within slices
-
-### Security Best Practices
-
-- **HTTPS Only**: Never use HTTP in production
-- **Audio Format Validation**: Validate file formats before processing
-- **Rate Limiting**: Implement API rate limiting
-- **File Size Limits**: Restrict maximum upload sizes
-- **Session Cleanup**: Implement session expiration
-- **Error Handling**: Don't leak sensitive information in errors
-- **Content Security**: Use proper CORS headers for cross-origin requests
-- **Slice ID Security**: Use secure generators in production:
-  - ✅ **NanoidSliceIdGenerator** (default, recommended)
-  - ✅ **UuidSliceIdGenerator** (secure, good compatibility)
-  - ⚠️ **SequentialSliceIdGenerator** (predictable, development only)
-  - ✅ **TimestampSliceIdGenerator** (secure with time-based uniqueness)
-  - ✅ **HashSliceIdGenerator** (deterministic but secure)
-
-### Monitoring
-
-- Track active sessions with `sessionManager.getStats()`
-- Monitor API response times and error rates
-- Watch memory usage and cleanup effectiveness
-- Alert on unusual session creation patterns
-
 ---
 
 ## 🤝 Contributing
@@ -430,11 +433,3 @@ Contributions welcome! Please read the contributing guidelines and submit pull r
 ## 📄 License
 
 Apache-2.0 License - see LICENSE file for details.
-
-## 🛡️ Security
-
-Found a security issue? Please report it privately to [security@example.com] rather than opening a public issue.
-
----
-
-**SecStream** - Secure Audio Streaming Made Simple

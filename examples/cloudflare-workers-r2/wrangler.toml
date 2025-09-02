@@ -1,0 +1,24 @@
+name = "secstream-r2-worker"
+main = "worker.ts"
+compatibility_date = "2024-09-02"
+
+[env.production]
+name = "secstream-r2-worker"
+
+[env.development]
+name = "secstream-r2-worker-dev"
+
+# R2 Bucket binding
+[[r2_buckets]]
+binding = "AUDIO_BUCKET"
+bucket_name = "secstream-audio-files"
+preview_bucket_name = "secstream-audio-files-preview"
+
+# Environment variables
+[vars]
+ALLOWED_ORIGINS = "https://your-app.com,https://your-app.dev"
+
+# Optional: Custom domain routing
+# [routes]
+# pattern = "api.your-domain.com/*"
+# zone_name = "your-domain.com"
