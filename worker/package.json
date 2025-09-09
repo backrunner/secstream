@@ -1,0 +1,24 @@
+{
+  "name": "secstream-worker",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker providing SecStream backed by R2 with optional key prefix",
+  "license": "MIT",
+  "main": "worker.ts",
+  "scripts": {
+    "configure": "node ./scripts/configure.mjs",
+    "dev": "pnpm run configure && wrangler dev",
+    "deploy": "pnpm run configure && wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "secstream": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250204.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^3.78.10"
+  }
+}
