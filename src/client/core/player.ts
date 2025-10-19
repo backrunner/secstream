@@ -572,15 +572,20 @@ export class SecureAudioPlayer extends EventTarget {
     };
 
     // Calculate start offset for resume or seeking
-    let startOffset = this._sliceOffsetSeconds;
-    if (this._isPaused && this._pausedAt > 0 && this._playbackStartTime > 0) {
-      // If resuming from pause, add the paused duration
+    let startOffset = 0;
+
+    if (this._sliceOffsetSeconds > 0) {
+      // Seeking: use the seek target offset
+      startOffset = this._sliceOffsetSeconds;
+    } else if (this._isPaused && this._pausedAt > 0 && this._playbackStartTime > 0) {
+      // Resuming from pause: calculate how far we were into the slice
       const pausedDuration = this._pausedAt - this._playbackStartTime;
-      startOffset += pausedDuration;
+      startOffset = pausedDuration;
     }
 
-    // Ensure offset doesn't exceed buffer duration and leave some padding for last slice
-    const maxOffset = Math.max(0, sliceData.audioBuffer.duration - 0.1); // Leave 0.1s padding
+    // Ensure offset doesn't exceed buffer duration
+    // For compressed formats (MP3), the buffer duration might differ slightly from expected slice duration
+    const maxOffset = Math.max(0, sliceData.audioBuffer.duration - 0.05); // Leave 50ms padding
     startOffset = Math.max(0, Math.min(startOffset, maxOffset));
 
     this.currentSource.start(0, startOffset);
