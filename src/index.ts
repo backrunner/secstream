@@ -12,8 +12,10 @@ export * from './shared/slice-id/index.js';
 export type {
   AudioConfig,
   AudioSlice,
+  CompressionLevel,
   DEFAULT_CONFIG,
   EncryptedSlice,
+  EncryptionAlgorithm,
   SessionInfo,
   SliceIdGenerator,
   SliceRequest,

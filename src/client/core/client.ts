@@ -486,6 +486,17 @@ export class SecureAudioClient<
     return this.audioBuffers.has(sequence);
   }
 
+  // Remove a specific slice from buffer
+  removeSlice(sequence: number): void {
+    this.audioBuffers.delete(sequence);
+    this.playedSlices.delete(sequence);
+  }
+
+  // Get all buffered slice indices
+  getBufferedSlices(): number[] {
+    return Array.from(this.audioBuffers.keys());
+  }
+
   // Get total duration in seconds
   getTotalDuration(): number {
     if (!this.sessionInfo)

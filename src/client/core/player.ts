@@ -1,4 +1,6 @@
+import type { BufferManagementStrategy, PrefetchStrategy } from '../types/strategies.js';
 import type { SecureAudioClient } from './client.js';
+import { BalancedBufferStrategy, LinearPrefetchStrategy } from '../strategies/default.js';
 
 export type PlayerEvent = 'play' | 'pause' | 'stop' | 'timeupdate' | 'ended' | 'error' | 'seek' | 'buffering' | 'buffered';
 
@@ -15,6 +17,8 @@ export interface PlayerState {
 
 export interface PlayerConfig {
   bufferingTimeoutMs?: number; // Default: 10000ms (10 seconds)
+  bufferStrategy?: BufferManagementStrategy; // Default: BalancedBufferStrategy
+  prefetchStrategy?: PrefetchStrategy; // Default: LinearPrefetchStrategy
 }
 
 /**
@@ -27,6 +31,8 @@ export class SecureAudioPlayer extends EventTarget {
   private currentSource: AudioBufferSourceNode | null = null;
   private gainNode: GainNode;
   private config: PlayerConfig;
+  private bufferStrategy: BufferManagementStrategy;
+  private prefetchStrategy: PrefetchStrategy;
 
   // Playback state
   private _isPlaying = false;
@@ -42,6 +48,7 @@ export class SecureAudioPlayer extends EventTarget {
   private _currentSeekOperationId: number | null = null; // Track current seek operation ID
   private _isSeeking = false; // Flag to indicate if seeking is in progress
   private _bufferingTimeout: number | null = null; // Timeout for buffering state
+  private _bufferCleanupTimer: number | null = null; // Periodic buffer cleanup timer
 
   constructor(client: SecureAudioClient, config: PlayerConfig = {}) {
     super();
@@ -53,9 +60,16 @@ export class SecureAudioPlayer extends EventTarget {
     // Reuse client's AudioContext to ensure identical sampleRate and avoid resampling artifacts
     this.audioContext = this.client.getAudioContext();
 
+    // Initialize strategies with defaults or user-provided ones
+    this.bufferStrategy = config.bufferStrategy || new BalancedBufferStrategy();
+    this.prefetchStrategy = config.prefetchStrategy || new LinearPrefetchStrategy();
+
     // Create audio graph
     this.gainNode = this.audioContext.createGain();
     this.gainNode.connect(this.audioContext.destination);
+
+    // Start periodic buffer cleanup
+    this.startBufferCleanup();
   }
 
   /**
@@ -233,6 +247,19 @@ export class SecureAudioPlayer extends EventTarget {
 
     // Immediately stop current audio buffer but keep play state
     this.stopCurrentSourceSilently();
+
+    // Use buffer strategy to determine cleanup during seek
+    const bufferedSlices = this.client.getBufferedSlices();
+    const slicesToCleanup = this.bufferStrategy.onSeek(
+      targetSliceIndex,
+      this._currentSliceIndex,
+      bufferedSlices,
+    );
+
+    // Cleanup slices based on strategy
+    for (const sliceIndex of slicesToCleanup) {
+      this.client.removeSlice(sliceIndex);
+    }
 
     try {
       // Abort if superseded
@@ -660,12 +687,70 @@ export class SecureAudioPlayer extends EventTarget {
   destroy(): void {
     this.stop();
     this.stopProgressUpdates();
+    this.stopBufferCleanup();
 
     // Clear any ongoing seek operation
     this._currentSeekOperationId = null;
 
     if (this.audioContext.state !== 'closed') {
       this.audioContext.close();
+    }
+  }
+
+  /**
+   * Start periodic buffer cleanup based on buffer strategy
+   */
+  private startBufferCleanup(): void {
+    // Cleanup every 5 seconds
+    this._bufferCleanupTimer = window.setInterval(() => {
+      this.cleanupBuffers();
+    }, 5000);
+  }
+
+  /**
+   * Stop periodic buffer cleanup
+   */
+  private stopBufferCleanup(): void {
+    if (this._bufferCleanupTimer !== null) {
+      window.clearInterval(this._bufferCleanupTimer);
+      this._bufferCleanupTimer = null;
+    }
+  }
+
+  /**
+   * Clean up buffers based on buffer strategy
+   */
+  private cleanupBuffers(): void {
+    const sessionInfo = this.client.getSessionInfo();
+    if (!sessionInfo)
+      return;
+
+    const bufferedSlices = this.client.getBufferedSlices();
+    const slicesToRemove: number[] = [];
+
+    for (const sliceIndex of bufferedSlices) {
+      const sliceData = this.client.getSliceData(sliceIndex);
+      if (!sliceData)
+        continue;
+
+      // Create buffer entry for strategy evaluation
+      const bufferEntry = {
+        buffer: sliceData.audioBuffer,
+        playCount: 1,
+        lastAccessed: Date.now(),
+        expiresAt: Date.now() + 120000, // Default 2 minutes
+        sliceIndex,
+      };
+
+      // Check if buffer should be cleaned up
+      if (this.bufferStrategy.shouldCleanupBuffer(bufferEntry, this._currentSliceIndex)) {
+        slicesToRemove.push(sliceIndex);
+      }
+    }
+
+    // Remove slices marked for cleanup
+    for (const sliceIndex of slicesToRemove) {
+      this.client.removeSlice(sliceIndex);
     }
   }
 
@@ -679,6 +764,10 @@ export class SecureAudioPlayer extends EventTarget {
     // Emit timeupdate events at 60fps for smooth progress
     this._progressTimer = window.setInterval(() => {
       if (this._isPlaying) {
+        const sessionInfo = this.client.getSessionInfo();
+        if (!sessionInfo)
+          return;
+
         this.dispatchEvent(new CustomEvent('timeupdate', {
           detail: {
             currentTime: this.getCurrentTime(),
@@ -686,8 +775,69 @@ export class SecureAudioPlayer extends EventTarget {
             progress: this.getCurrentTime() / this.duration,
           },
         }));
+
+        // Use prefetch strategy to determine which slices to prefetch
+        const bufferedSlices = this.getBufferedSliceIndices();
+        const slicesToPrefetch = this.prefetchStrategy.getSlicesToPrefetch(
+          this._currentSliceIndex,
+          sessionInfo.totalSlices,
+          bufferedSlices,
+          this._isPlaying,
+        );
+
+        // Prefetch slices asynchronously
+        if (slicesToPrefetch.length > 0) {
+          this.prefetchSlicesAsync(slicesToPrefetch);
+        }
       }
     }, 16); // ~60fps
+  }
+
+  /**
+   * Get list of buffered slice indices
+   */
+  private getBufferedSliceIndices(): number[] {
+    const sessionInfo = this.client.getSessionInfo();
+    if (!sessionInfo)
+      return [];
+
+    const buffered: number[] = [];
+    for (let i = 0; i < sessionInfo.totalSlices; i++) {
+      if (this.client.isSliceAvailable(i)) {
+        buffered.push(i);
+      }
+    }
+    return buffered;
+  }
+
+  /**
+   * Prefetch slices asynchronously without blocking playback
+   */
+  private prefetchSlicesAsync(sliceIndices: number[]): void {
+    const sessionInfo = this.client.getSessionInfo();
+    if (!sessionInfo)
+      return;
+
+    for (const sliceIndex of sliceIndices) {
+      if (sliceIndex < 0 || sliceIndex >= sessionInfo.totalSlices)
+        continue;
+      if (this.client.isSliceAvailable(sliceIndex))
+        continue;
+
+      const sliceId = sessionInfo.sliceIds[sliceIndex];
+      if (!sliceId)
+        continue;
+
+      // Load slice asynchronously
+      this.client.loadSlice(sliceId).then(
+        () => {
+          this.prefetchStrategy.onPrefetchComplete(sliceIndex, true);
+        },
+        (error) => {
+          this.prefetchStrategy.onPrefetchComplete(sliceIndex, false, error as Error);
+        },
+      );
+    }
   }
 
   /**

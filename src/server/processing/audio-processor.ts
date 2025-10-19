@@ -69,6 +69,8 @@ export class AudioProcessor<
       sliceDurationMs: 5000,
       compressionLevel: 6,
       encryptionAlgorithm: 'AES-GCM',
+      randomizeSliceLength: false,
+      sliceLengthVariance: 0.4,
       prewarmSlices: 0,
       prewarmConcurrency: 3,
       adaptiveCompression: true,
@@ -94,9 +96,56 @@ export class AudioProcessor<
     // Convert input to AudioBuffer-like data
     const audioSource = await this.decodeAudio(audioData);
 
-    // Calculate slice information
-    const samplesPerSlice = Math.floor((audioSource.sampleRate * this.config.sliceDurationMs) / 1000);
-    const totalSlices = Math.ceil(audioSource.length / samplesPerSlice);
+    // Calculate slice information with optional randomization
+    let totalSlices: number;
+    let sliceOffsets: number[]; // Cumulative sample offsets for each slice
+
+    if (this.config.randomizeSliceLength) {
+      // Randomized slice length mode: generate variable-length slices
+      const variance = Math.max(0, Math.min(1, this.config.sliceLengthVariance ?? 0.4));
+      const avgSamplesPerSlice = Math.floor((audioSource.sampleRate * this.config.sliceDurationMs) / 1000);
+
+      // Use session-specific random seed for consistent patterns per session
+      const sessionSeed = this.generateSeedFromSessionId(sessionId);
+      const rng = this.createSeededRandom(sessionSeed);
+
+      const sliceLengths: number[] = [];
+      let totalSamplesAllocated = 0;
+
+      while (totalSamplesAllocated < audioSource.length) {
+        // Generate random factor within variance range: [1-variance, 1+variance]
+        const randomFactor = 1 + (rng() * 2 - 1) * variance;
+        const samplesThisSlice = Math.floor(avgSamplesPerSlice * randomFactor);
+        const remaining = audioSource.length - totalSamplesAllocated;
+
+        // Don't create tiny final slices - merge with previous if too small
+        if (remaining < avgSamplesPerSlice * 0.3 && sliceLengths.length > 0) {
+          sliceLengths[sliceLengths.length - 1] += remaining;
+          break;
+        }
+
+        sliceLengths.push(Math.min(samplesThisSlice, remaining));
+        totalSamplesAllocated += sliceLengths[sliceLengths.length - 1];
+      }
+
+      totalSlices = sliceLengths.length;
+
+      // Calculate cumulative offsets for easy slice extraction
+      sliceOffsets = [0];
+      for (let i = 0; i < sliceLengths.length; i++) {
+        sliceOffsets.push(sliceOffsets[i] + sliceLengths[i]);
+      }
+    } else {
+      // Fixed slice length mode (default behavior)
+      const samplesPerSlice = Math.floor((audioSource.sampleRate * this.config.sliceDurationMs) / 1000);
+      totalSlices = Math.ceil(audioSource.length / samplesPerSlice);
+
+      // Generate offsets for fixed-length slices
+      sliceOffsets = [];
+      for (let i = 0; i <= totalSlices; i++) {
+        sliceOffsets.push(Math.min(i * samplesPerSlice, audioSource.length));
+      }
+    }
 
     // Generate unique slice IDs using the configured generator
     const sliceIds: string[] = [];
@@ -137,7 +186,7 @@ export class AudioProcessor<
               i,
               sessionKey,
               sessionId,
-              samplesPerSlice,
+              sliceOffsets,
               sliceId,
             );
             this.manageSliceCache(sliceCache, sliceId, encryptedSlice);
@@ -187,7 +236,7 @@ export class AudioProcessor<
         }
 
         // Prepare slice on-demand for fast response
-        const promise = this.prepareSlice(audioSource, sliceIndex, sessionKey, sessionId, samplesPerSlice, sliceId)
+        const promise = this.prepareSlice(audioSource, sliceIndex, sessionKey, sessionId, sliceOffsets, sliceId)
           .then((encryptedSlice) => {
             this.manageSliceCache(sliceCache, sliceId, encryptedSlice);
             return encryptedSlice;
@@ -207,11 +256,11 @@ export class AudioProcessor<
     sliceIndex: number,
     sessionKey: TKey,
     sessionId: string,
-    samplesPerSlice: number,
+    sliceOffsets: number[],
     sliceId: string, // Use the provided sliceId instead of generating it
   ): Promise<EncryptedSlice> {
-    const startSample = sliceIndex * samplesPerSlice;
-    const endSample = Math.min(startSample + samplesPerSlice, audioSource.length);
+    const startSample = sliceOffsets[sliceIndex];
+    const endSample = sliceOffsets[sliceIndex + 1];
 
     // Extract slice data efficiently
     const sliceData = this.extractAudioSlice(audioSource, startSample, endSample);
@@ -359,5 +408,37 @@ export class AudioProcessor<
     if (format === 'mp3' || format === 'flac' || format === 'ogg' || format === 'aac')
       return 0; // effectively store or lowest effort
     return this.config.compressionLevel;
+  }
+
+  /**
+   * Generate a numeric seed from session ID for deterministic randomization
+   * Different sessions will produce different random patterns
+   */
+  private generateSeedFromSessionId(sessionId: string): number {
+    let hash = 0;
+    for (let i = 0; i < sessionId.length; i++) {
+      const char = sessionId.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash);
+  }
+
+  /**
+   * Create a seeded random number generator (Linear Congruential Generator)
+   * Returns a function that generates random numbers in [0, 1) range
+   * Same seed will always produce the same sequence
+   */
+  private createSeededRandom(seed: number): () => number {
+    let state = seed;
+    // LCG parameters (same as glibc)
+    const a = 1103515245;
+    const c = 12345;
+    const m = 2 ** 31;
+
+    return () => {
+      state = (a * state + c) % m;
+      return state / m;
+    };
   }
 }

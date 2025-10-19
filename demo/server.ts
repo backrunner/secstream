@@ -27,11 +27,33 @@ app.use('/*', serveStatic({
   rewriteRequestPath: (path) => path.replace(/^\//, ''),
 }));
 
-// Create session manager
+// Create session manager with optimized settings for low latency streaming
 const sessionManager = new SessionManager({
   sliceDurationMs: 5000, // 5 second slices
   compressionLevel: 6,
+  // Prewarm optimization: prepare first 3 slices during key exchange
+  // This reduces initial playback latency by having slices ready immediately
+  prewarmSlices: 3,
+  prewarmConcurrency: 3,
+  // Cache settings for better performance
+  serverCacheSize: 10,
+  serverCacheTtlMs: 300_000, // 5 minutes
 });
+
+// Create a second session manager with randomized slice lengths
+const randomizedSessionManager = new SessionManager({
+  sliceDurationMs: 5000, // Average slice duration
+  compressionLevel: 6,
+  randomizeSliceLength: true,  // Enable randomization
+  sliceLengthVariance: 0.4,     // ±40% variance
+  prewarmSlices: 3,
+  prewarmConcurrency: 3,
+  serverCacheSize: 10,
+  serverCacheTtlMs: 300_000,
+});
+
+// Track which session belongs to which manager
+const sessionManagerMap = new Map<string, SessionManager>();
 
 // API Routes
 app.post('/api/sessions', async (c) => {
@@ -41,6 +63,7 @@ app.post('/api/sessions', async (c) => {
     console.log('📋 Form data keys:', Array.from(formData.keys()));
 
     const audioFile = formData.get('audio') as File;
+    const randomizeSliceLength = formData.get('randomizeSliceLength') === 'true';
 
     if (!audioFile) {
       console.error('❌ No audio file provided in request');
@@ -50,7 +73,8 @@ app.post('/api/sessions', async (c) => {
     console.log('📁 Audio file details:', {
       name: audioFile.name,
       size: audioFile.size,
-      type: audioFile.type
+      type: audioFile.type,
+      randomizeSliceLength,
     });
 
     const audioBuffer = await audioFile.arrayBuffer();
@@ -61,10 +85,17 @@ app.post('/api/sessions', async (c) => {
     const metadata = parseAudioMetadata(audioBuffer);
     console.log(`📄 Detected format: ${metadata.format}, Sample rate: ${metadata.sampleRate}Hz, Channels: ${metadata.channels}`);
 
+    // Select the appropriate session manager based on configuration
+    const activeSessionManager = randomizeSliceLength ? randomizedSessionManager : sessionManager;
+    console.log(`🔧 Using ${randomizeSliceLength ? 'randomized' : 'standard'} session manager`);
+
     // Create session
     console.log('🏗️ Creating session with SessionManager...');
-    const sessionId = await sessionManager.createSession(audioBuffer);
+    const sessionId = await activeSessionManager.createSession(audioBuffer);
     console.log('✅ Session created successfully:', sessionId);
+
+    // Track which manager this session belongs to
+    sessionManagerMap.set(sessionId, activeSessionManager);
 
     const response = {
       sessionId,
@@ -73,6 +104,9 @@ app.post('/api/sessions', async (c) => {
         sampleRate: metadata.sampleRate,
         channels: metadata.channels,
         duration: metadata.duration,
+      },
+      configuration: {
+        randomizeSliceLength,
       },
       message: 'Session created successfully',
     };
@@ -103,7 +137,10 @@ app.post('/api/sessions/:sessionId/key-exchange', async (c) => {
     const keyExchangeRequest = await c.req.json();
 
     console.log(`🔑 Key exchange for session: ${sessionId}`);
-    const response = await sessionManager.handleKeyExchange(sessionId, keyExchangeRequest);
+
+    // Get the correct session manager for this session
+    const activeSessionManager = sessionManagerMap.get(sessionId) || sessionManager;
+    const response = await activeSessionManager.handleKeyExchange(sessionId, keyExchangeRequest);
 
     return c.json(response);
   } catch (error) {
@@ -115,7 +152,10 @@ app.post('/api/sessions/:sessionId/key-exchange', async (c) => {
 app.get('/api/sessions/:sessionId/info', async (c) => {
   try {
     const sessionId = c.req.param('sessionId');
-    const info = sessionManager.getSessionInfo(sessionId);
+
+    // Get the correct session manager for this session
+    const activeSessionManager = sessionManagerMap.get(sessionId) || sessionManager;
+    const info = activeSessionManager.getSessionInfo(sessionId);
 
     if (!info) {
       return c.json({ error: 'Session not found' }, 404);
@@ -133,7 +173,9 @@ app.get('/api/sessions/:sessionId/slices/:sliceId', async (c) => {
     const sessionId = c.req.param('sessionId');
     const sliceId = c.req.param('sliceId');
 
-    const slice = await sessionManager.getSlice(sessionId, sliceId);
+    // Get the correct session manager for this session
+    const activeSessionManager = sessionManagerMap.get(sessionId) || sessionManager;
+    const slice = await activeSessionManager.getSlice(sessionId, sliceId);
 
     if (!slice) {
       return c.json({ error: 'Slice not found' }, 404);

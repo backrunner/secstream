@@ -24,6 +24,27 @@ interface AudioSession {
 }
 
 /**
+ * Configuration options for SessionManager
+ * Extends AudioConfig with additional server-side processing options
+ */
+export interface SessionManagerConfig extends Partial<AudioConfig> {
+  /** Custom processing configuration (compression, encryption, key exchange) */
+  processingConfig?: ProcessingConfig;
+  /** Custom slice ID generator */
+  sliceIdGenerator?: SliceIdGenerator;
+  /** Number of slices to prewarm after key exchange. Default: 0 */
+  prewarmSlices?: number;
+  /** Maximum parallel prewarm workers. Default: 3 */
+  prewarmConcurrency?: number;
+  /** Enable adaptive compression for already-compressed formats. Default: true */
+  adaptiveCompression?: boolean;
+  /** Server-side encrypted slice cache size (LRU). Default: 10 */
+  serverCacheSize?: number;
+  /** Server-side encrypted slice TTL in ms. Default: 300_000 (5 minutes) */
+  serverCacheTtlMs?: number;
+}
+
+/**
  * Manages audio sessions including key exchange and audio processing
  * Handles session lifecycle, cleanup, and statistics
  * Compatible with Node.js, Cloudflare Workers, and other JavaScript environments
@@ -31,36 +52,23 @@ interface AudioSession {
  */
 export class SessionManager {
   private sessions = new Map<string, AudioSession>();
-  private config: AudioConfig & {
-    processingConfig?: ProcessingConfig;
-    sliceIdGenerator?: SliceIdGenerator;
-    prewarmSlices?: number;
-    prewarmConcurrency?: number;
-    adaptiveCompression?: boolean;
-    serverCacheSize?: number;
-    serverCacheTtlMs?: number;
-  };
+  private config: SessionManagerConfig & Required<Pick<AudioConfig, 'sliceDurationMs' | 'compressionLevel' | 'encryptionAlgorithm'>>;
 
   private cleanupTimer: Timer | null = null;
   private keyExchangeProcessorFactory: () => KeyExchangeProcessor<any, any, any, any>;
 
-  constructor(
-    config: Partial<
-      AudioConfig & {
-        processingConfig?: ProcessingConfig;
-        sliceIdGenerator?: SliceIdGenerator;
-        prewarmSlices?: number;
-        prewarmConcurrency?: number;
-        adaptiveCompression?: boolean;
-        serverCacheSize?: number;
-        serverCacheTtlMs?: number;
-      }
-    > = {},
-  ) {
+  constructor(config: SessionManagerConfig = {}) {
     this.config = {
       sliceDurationMs: 5000,
       compressionLevel: 6,
       encryptionAlgorithm: 'AES-GCM',
+      randomizeSliceLength: false,
+      sliceLengthVariance: 0.4,
+      prewarmSlices: 0,
+      prewarmConcurrency: 3,
+      adaptiveCompression: true,
+      serverCacheSize: 10,
+      serverCacheTtlMs: 300_000,
       ...config,
     };
 

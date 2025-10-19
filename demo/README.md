@@ -5,16 +5,19 @@ A complete runnable demo showcasing SecStream's secure audio streaming capabilit
 ## 🚀 Quick Start
 
 ```bash
-# Install dependencies
+# From project root
+npm run dev
+
+# OR from demo directory
 cd demo
 pnpm install
-
-# Start development server
 pnpm run dev
 
 # Open browser
 open http://localhost:3000
 ```
+
+**Note**: The demo includes a TypeScript build step that compiles browser-side code (`demo-transport.ts`) before starting the server.
 
 ## ✨ Features Demonstrated
 
@@ -42,12 +45,26 @@ open http://localhost:3000
 
 ```
 demo/
-├── server.ts          # Hono server with SecStream integration
+├── server.ts               # Hono server with SecStream integration
+├── demo-transport.ts       # Browser-side transport implementation (TypeScript)
+├── build.js                # esbuild configuration for browser code
+├── dist/
+│   ├── demo-transport.js   # Compiled browser code
+│   └── utils/
+│       └── crc32.js        # CRC32 validation utilities
+├── utils/
+│   └── crc32.ts            # CRC32 implementation (TypeScript)
 ├── public/
-│   └── index.html     # Demo web interface
-├── package.json       # Dependencies and scripts
-└── tsconfig.json      # TypeScript configuration
+│   ├── index.html          # Demo web interface
+│   └── styles.css          # UI styles
+├── package.json            # Dependencies and scripts
+└── tsconfig.json           # TypeScript configuration
 ```
+
+The demo uses a split architecture:
+- **Server code** (`server.ts`): Runs in Node.js with tsx (TypeScript loader)
+- **Browser code** (`demo-transport.ts`): Compiled to JavaScript via esbuild
+- **Shared utilities** (`utils/crc32.ts`): Used by both server and browser
 
 ## 🎯 How It Works
 
@@ -77,15 +94,26 @@ demo/
 # Install dependencies
 pnpm install
 
-# Start development server (auto-reload)
-pnpm run dev
-
-# Build for production
+# Build browser code (compiles TypeScript to JavaScript)
 pnpm run build
+
+# Start development server (auto-builds and auto-reloads)
+pnpm run dev
 
 # Start production server
 pnpm start
 ```
+
+### Build Process
+
+The demo requires building browser-side TypeScript files:
+
+1. **`demo-transport.ts`** → `dist/demo-transport.js` (bundled with dependencies)
+2. **`utils/crc32.ts`** → `dist/utils/crc32.js` (standalone module)
+
+The build uses **esbuild** for fast compilation and outputs ES modules that can be imported directly in the browser.
+
+**Auto-build**: Running `pnpm run dev` automatically builds before starting and watches for changes.
 
 ## 🌐 Deployment
 
@@ -124,7 +152,21 @@ This demo serves as a reference for integrating SecStream into:
 
 ## 📝 Notes
 
+### Configuration
 - File size limit: 50MB
 - Session timeout: 30 minutes
 - Slice duration: 5 seconds
 - Compression level: 6
+
+### Streaming Optimization
+This demo uses **prewarm optimization** for instant playback:
+- `prewarmSlices: 3` - First 3 slices (15 seconds) prepared during key exchange
+- `prewarmConcurrency: 3` - Parallel processing for faster preparation
+- **Result**: Near-zero latency when starting playback from the beginning
+
+The first slice is ready **immediately** when the user clicks play, providing a smooth instant-start experience.
+
+### Cache Settings
+- Server cache: 10 slices in memory (50 seconds of audio)
+- Cache TTL: 5 minutes
+- In-flight deduplication prevents redundant processing

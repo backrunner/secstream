@@ -4,8 +4,9 @@
   "description": "SecStream Demo Server using Hono",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch server.ts",
-    "start": "tsx server.ts"
+    "build": "node build.js",
+    "dev": "npm run build && tsx watch --clear-screen=false server.ts",
+    "start": "npm run build && tsx server.ts"
   },
   "dependencies": {
     "hono": "^4.0.0",
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "esbuild": "^0.19.0",
     "typescript": "^5.3.0"
   },
   "packageManager": "pnpm@8.15.0"

@@ -10,9 +10,11 @@ import { verifySliceCrc32 } from './utils/crc32.js';
  */
 export class DemoTransport implements Transport {
   private baseUrl: string;
+  private randomizeSliceLength: boolean;
 
-  constructor(baseUrl: string = '') {
+  constructor(baseUrl: string = '', randomizeSliceLength: boolean = false) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.randomizeSliceLength = randomizeSliceLength;
   }
 
   async createSession(audioData: File | ArrayBuffer): Promise<string> {
@@ -21,8 +23,12 @@ export class DemoTransport implements Transport {
     if (audioData instanceof File) {
       const formData = new FormData();
       formData.append('audio', audioData);
+      // Add randomize slice length configuration
+      formData.append('randomizeSliceLength', String(this.randomizeSliceLength));
       body = formData;
     } else {
+      // For ArrayBuffer, we can't send FormData, so we'll use JSON
+      // This is a simplified approach - in production you might want to handle this differently
       body = audioData;
     }
 

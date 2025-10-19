@@ -39,6 +39,35 @@ export interface SliceIdGenerator {
 }
 ```
 
+### 5. Randomized Slice Lengths
+The library supports randomized slice lengths for enhanced security against pattern analysis:
+```typescript
+export interface AudioConfig {
+  sliceDurationMs: number;              // Average slice duration
+  randomizeSliceLength?: boolean;       // Enable randomization (default: false)
+  sliceLengthVariance?: number;         // Variance factor 0.0-1.0 (default: 0.4)
+  // ... other config
+}
+```
+
+**Key Features:**
+- **Disabled by default** - maintains backward compatibility
+- **Session-specific patterns** - each session uses a different randomization seed derived from session ID
+- **Deterministic** - same session ID always produces same slice pattern (no performance overhead)
+- **Configurable variance** - control how much slices vary from average duration
+- **Smart merging** - prevents tiny final slices by merging with previous slice
+
+**Example:**
+```typescript
+const sessionManager = new SessionManager({
+  sliceDurationMs: 5000,           // Average 5 seconds
+  randomizeSliceLength: true,      // Enable randomization
+  sliceLengthVariance: 0.4,        // ±40% variance (3-7 seconds)
+});
+// Session A might produce: [3.2s, 6.5s, 4.1s, 5.8s, ...]
+// Session B might produce: [5.3s, 2.9s, 6.8s, 4.4s, ...]
+```
+
 ## Folder Structure and Organization
 
 ```
@@ -212,6 +241,54 @@ const { encrypted, metadata } = await this.encryptionProcessor.encrypt(
 - Handle Promise rejections appropriately
 - Implement retry mechanisms for network operations
 
+### 3. Streaming Latency Optimization
+
+For applications that require instant playback (especially from the beginning), use the **prewarm** feature:
+
+```typescript
+const sessionManager = new SessionManager({
+  sliceDurationMs: 5000,
+  compressionLevel: 6,
+  // Prewarm first 3 slices during key exchange
+  prewarmSlices: 3,
+  prewarmConcurrency: 3,
+  serverCacheSize: 10,
+  serverCacheTtlMs: 300_000,
+});
+```
+
+**How Prewarm Works:**
+1. Client initiates key exchange
+2. Server processes key exchange and returns immediately
+3. In parallel (non-blocking), server starts preparing first N slices
+4. Slices are encrypted, compressed, and cached
+5. When client requests first slice, it's already ready (cache hit)
+
+**Implementation Details:**
+- Located in `audio-processor.ts` lines 174-215
+- Uses fire-and-forget pattern (line 214) to avoid blocking key exchange
+- Configurable concurrency for parallel processing
+- Failed prewarm operations are non-fatal (graceful degradation)
+
+**Performance Impact:**
+- **Latency Reduction**: ~100-300ms → ~0-50ms for first slice
+- **CPU Usage**: Temporary spike during prewarm (background)
+- **Memory**: `prewarmSlices × avgSliceSize` additional cache
+- **Recommended**: 3-5 slices for smooth streaming, 1 for minimal latency
+
+**When to Use:**
+- ✅ Music/podcast players (sequential playback from start)
+- ✅ Live streaming scenarios
+- ✅ Video game audio systems (level start)
+- ❌ Random access players (heavy seeking)
+- ❌ Resource-constrained servers
+
+**Configuration Guidelines:**
+- **Low latency priority**: `prewarmSlices: 1-3`
+- **Smooth buffering**: `prewarmSlices: 3-5`
+- **Resource saving**: `prewarmSlices: 0` (default)
+- Adjust `prewarmConcurrency` based on available CPU cores
+
 ## Security Best Practices
 
 ### 1. Key Management
@@ -324,6 +401,9 @@ const customSessionManager = new SessionManager({
 8. **Don't use insecure slice ID generators in production** - avoid SequentialSliceIdGenerator in production
 9. **Ensure slice ID uniqueness** - custom generators must guarantee unique IDs within a session
 10. **Consider slice ID performance** - generators are called for every slice, optimize accordingly
+11. **NEVER import server code in client** - `src/client/` must not import from `src/server/`
+12. **NEVER import client code in server** - `src/server/` must not import from `src/client/`
+13. **Always verify bundle separation** - run grep checks after making changes to imports
 
 ## Package Information
 
@@ -331,6 +411,138 @@ const customSessionManager = new SessionManager({
 - **Main Entry Points**: Client, Server, and individual processors
 - **TypeScript**: Full type safety with no `any` types
 - **Platform Support**: Node.js, Browser, Cloudflare Workers
+
+### Package Structure and Exports
+
+SecStream uses **separate entry points** to ensure client and server code remain isolated:
+
+```
+secstream/
+├── secstream         → Main entry (client + server + shared) - 106 KB
+├── secstream/client  → Client-only code + shared types - 69 KB
+└── secstream/server  → Server-only code + shared types - 38 KB
+```
+
+**CRITICAL RULES FOR MAINTAINING SEPARATION:**
+
+1. **Client code** (`src/client/`) must NEVER import from `src/server/`
+2. **Server code** (`src/server/`) must NEVER import from `src/client/`
+3. **Both can import** from `src/shared/` for types, utilities, and processors
+4. **Rollup builds** three separate bundles from three entry points
+5. **package.json exports** field controls external access
+
+### Import Patterns for Development
+
+When working on the codebase, follow these import patterns:
+
+**In Client Code (`src/client/**`):**
+```typescript
+// ✅ Allowed
+import type { AudioConfig, SessionInfo } from '../shared/types/interfaces.js';
+import { AesGcmEncryptionProcessor } from '../shared/crypto/processors/aes-gcm-processor.js';
+
+// ❌ NEVER do this
+import { SessionManager } from '../server/core/session-manager.js'; // FORBIDDEN
+```
+
+**In Server Code (`src/server/**`):**
+```typescript
+// ✅ Allowed
+import type { AudioConfig, EncryptedSlice } from '../../shared/types/interfaces.js';
+import { DeflateCompressionProcessor } from '../../shared/compression/processors/deflate-processor.js';
+
+// ❌ NEVER do this
+import { SecureAudioClient } from '../../client/core/client.js'; // FORBIDDEN
+```
+
+**In Shared Code (`src/shared/**`):**
+```typescript
+// ✅ Only import from other shared modules
+import type { AudioConfig } from '../types/interfaces.js';
+import { someUtil } from '../utils/helpers.js';
+
+// ❌ NEVER import from client or server
+import { anything } from '../../client/...'; // FORBIDDEN
+import { anything } from '../../server/...'; // FORBIDDEN
+```
+
+### Export Configuration (package.json)
+
+The `exports` field in package.json controls what users can import:
+
+```json
+{
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "default": "./dist/server/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
+    },
+    "./package.json": "./package.json"
+  }
+}
+```
+
+This configuration:
+- Prevents users from importing internal paths like `secstream/dist/...`
+- Enforces the public API surface
+- Enables tree-shaking for optimal bundle sizes
+- Provides clear separation between client/server code
+
+### Adding New Exports
+
+When adding new functionality that should be exported:
+
+1. **Identify the audience**: Is it client-only, server-only, or shared?
+2. **Add to the correct index.ts**:
+   - `src/client/index.ts` for client functionality
+   - `src/server/index.ts` for server functionality
+   - `src/index.ts` for shared utilities/types
+3. **Use explicit named exports** (never `export *` without care)
+4. **Export types separately** from implementations
+5. **Test the import** from the consumer's perspective
+
+Example:
+```typescript
+// In src/server/index.ts
+export { SessionManager } from './core/session-manager.js';
+export type { SessionManagerConfig } from './core/session-manager.js';
+export { AudioProcessor } from './processing/audio-processor.js';
+export type { AudioProcessorConfig, AudioSource } from './processing/audio-processor.js';
+```
+
+### Verifying Separation
+
+To verify that client/server separation is maintained:
+
+```bash
+# Check client doesn't import server
+grep -r "from.*server" src/client/
+
+# Check server doesn't import client
+grep -r "from.*client" src/server/
+
+# Check bundle sizes
+ls -lh dist/*.js dist/client/*.js dist/server/*.js
+
+# Verify no server code in client bundle
+grep -o "SessionManager\|AudioProcessor" dist/client/index.js
+
+# Verify no client code in server bundle
+grep -o "SecureAudioClient\|SecureAudioPlayer" dist/server/index.js
+```
+
+All checks should return empty results or expected sizes.
 
 ## Extension Points
 

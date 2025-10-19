@@ -1,5 +1,10 @@
 packages:
-  - '.'
-  - 'demo'
-  - 'examples/*'
-  - 'worker'
+  - .
+  - demo
+  - examples/*
+  - worker
+
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - workerd

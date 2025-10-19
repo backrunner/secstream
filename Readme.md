@@ -73,6 +73,64 @@ player.stop()
 await player.seek(30) // Seek to 30 seconds
 ```
 
+## 📦 Package Structure
+
+SecStream is designed with **complete separation** between client and server code to ensure optimal bundle sizes and prevent code contamination.
+
+### Import Paths
+
+**For Server-Side (Node.js, Cloudflare Workers, etc.):**
+```typescript
+// ✅ Correct - Only imports server code
+import { SessionManager, AudioProcessor } from 'secstream/server'
+import type { SessionManagerConfig, AudioProcessorConfig } from 'secstream/server'
+```
+
+**For Client-Side (Browser, React, Vue, etc.):**
+```typescript
+// ✅ Correct - Only imports client code
+import { SecureAudioClient, SecureAudioPlayer } from 'secstream/client'
+import type { ClientConfig, PlayerConfig } from 'secstream/client'
+```
+
+**For Shared Types and Utilities:**
+```typescript
+// ✅ For isomorphic/shared code - imports everything
+import type { AudioConfig, CompressionLevel, EncryptionAlgorithm } from 'secstream'
+import { NanoidSliceIdGenerator, AesGcmEncryptionProcessor } from 'secstream'
+```
+
+### Bundle Sizes (v0.1.0)
+
+| Import Path | Bundle Size | Contains |
+|------------|-------------|----------|
+| `secstream/client` | ~69 KB | Client code + shared types |
+| `secstream/server` | ~38 KB | Server code + shared types |
+| `secstream` | ~106 KB | Everything (client + server + shared) |
+
+### Why Separate Imports?
+
+- **🎯 Optimal Bundle Sizes**: Client apps don't ship with server code
+- **🔒 Security**: Server-only code stays on the server
+- **⚡ Performance**: Faster load times with smaller bundles
+- **🛡️ Type Safety**: TypeScript prevents importing wrong code
+- **📦 Tree Shaking**: Better dead code elimination
+
+### Migration Guide
+
+If you're using the main entry point:
+
+```typescript
+// ❌ Avoid this - imports everything
+import { SessionManager, SecureAudioClient } from 'secstream'
+
+// ✅ Better - use specific entry points
+import { SessionManager } from 'secstream/server'
+import { SecureAudioClient } from 'secstream/client'
+```
+
+The main `secstream` entry point is kept for backward compatibility and shared utilities, but prefer specific entry points for optimal bundle sizes.
+
 ## 📚 Documentation
 
 ### Server API
@@ -88,6 +146,85 @@ const sessionManager = new SessionManager({
   encryptionAlgorithm: 'AES-GCM'
 })
 ```
+
+##### Randomized Slice Lengths (Enhanced Security)
+
+For enhanced security against pattern analysis, you can enable randomized slice lengths. This makes each slice have a variable duration while maintaining an average:
+
+```typescript
+const sessionManager = new SessionManager({
+  sliceDurationMs: 5000,           // Average slice duration (5 seconds)
+  randomizeSliceLength: true,      // Enable randomization (default: false)
+  sliceLengthVariance: 0.4,        // Variance ±40% (default: 0.4)
+  compressionLevel: 6,
+})
+```
+
+With `randomizeSliceLength: true` and `sliceLengthVariance: 0.4`:
+- Average slice duration: 5 seconds
+- Actual slice durations will vary between ~3 seconds and ~7 seconds
+- Each session uses a different randomization pattern (based on session ID)
+- This makes traffic analysis and pattern detection much more difficult
+
+**Configuration Options:**
+- `randomizeSliceLength` (boolean, default: `false`): Enable variable-length slicing
+- `sliceLengthVariance` (number, 0.0-1.0, default: `0.4`): Variance factor
+  - `0.2` = ±20% variance (more predictable)
+  - `0.4` = ±40% variance (balanced, recommended)
+  - `0.6` = ±60% variance (more random)
+
+**Security Benefits:**
+- Makes slice boundaries unpredictable
+- Different patterns for each session
+- Harder to analyze traffic patterns
+- No performance overhead (deterministic randomization)
+
+##### Streaming Optimization (Low Latency Playback)
+
+To minimize initial playback latency, especially when playing from the beginning, use the **prewarm** feature to prepare slices during key exchange:
+
+```typescript
+const sessionManager = new SessionManager({
+  sliceDurationMs: 5000,
+  compressionLevel: 6,
+  // Prewarm the first 3 slices (15 seconds of audio) during key exchange
+  prewarmSlices: 3,              // Number of slices to prepare ahead (default: 0)
+  prewarmConcurrency: 3,         // Parallel workers for prewarming (default: 3)
+  // Cache settings
+  serverCacheSize: 10,           // Keep 10 slices in memory (default: 10)
+  serverCacheTtlMs: 300_000,     // Cache for 5 minutes (default: 300_000)
+})
+```
+
+**How Prewarm Works:**
+
+1. **Key Exchange Phase**: Client completes ECDH key exchange with server
+2. **Background Processing**: Server immediately starts preparing the first N slices in parallel
+3. **Non-Blocking**: Key exchange response returns instantly (processing happens async)
+4. **Cache Ready**: When client requests first slices, they're already encrypted and cached
+5. **Result**: Near-instant playback start with no waiting for encryption
+
+**Latency Comparison:**
+
+| Configuration | First Slice Latency | Use Case |
+|---------------|-------------------|----------|
+| `prewarmSlices: 0` | ~100-300ms | On-demand processing (default) |
+| `prewarmSlices: 1` | ~0-50ms | Instant playback start |
+| `prewarmSlices: 3` | ~0-50ms | Smooth initial buffering (recommended) |
+| `prewarmSlices: 5` | ~0-50ms | Pre-buffer for network variance |
+
+**Best Practices:**
+- For **instant playback**: Set `prewarmSlices: 1` (prepare just the first slice)
+- For **smooth streaming**: Set `prewarmSlices: 3-5` (15-25 seconds buffered)
+- For **seek-heavy usage**: Keep default `0` (saves server resources)
+- Adjust `prewarmConcurrency` based on server CPU cores
+
+**Trade-offs:**
+- ✅ Dramatically reduces initial playback latency
+- ✅ Better user experience for sequential playback
+- ✅ No client-side changes needed
+- ⚠️ Uses more server CPU during key exchange
+- ⚠️ Not beneficial for random seeking patterns
 
 **Methods:**
 - `createSession(audioData: ArrayBuffer | ReadableStream): Promise<string>` - Create new session

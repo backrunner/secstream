@@ -21,7 +21,26 @@
         <div class="header">
             <h1 class="logo">SecStream</h1>
             <p class="subtitle">Secure Real-time Audio Streaming</p>
-            <span class="version">v0.1.0 - Production Demo</span>
+            <span class="version">v0.1.1 - Production Demo</span>
+        </div>
+
+        <!-- Server Configuration -->
+        <div class="card">
+            <h3 class="section-title">⚙️ Server Configuration</h3>
+            <div style="padding: 15px;">
+                <label style="display: flex; align-items: center; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="randomizeSliceLength" style="margin-right: 10px; width: 18px; height: 18px; cursor: pointer;">
+                    <div>
+                        <div style="font-weight: 500; margin-bottom: 4px;">
+                            Enable Randomized Slice Lengths
+                        </div>
+                        <div style="font-size: 0.85em; color: #888; line-height: 1.4;">
+                            Enables variable-length slices (±40% variance) for enhanced security against traffic analysis.
+                            Each session gets a unique randomization pattern.
+                        </div>
+                    </div>
+                </label>
+            </div>
         </div>
 
         <!-- Upload Section -->
@@ -288,9 +307,13 @@
                     lastModified: file.lastModified
                 });
 
-                // Create transport instance
-                const transport = new DemoTransport('http://localhost:3000');
-                console.log('🚀 Created DemoTransport instance');
+                // Get randomize slice length setting from checkbox
+                const randomizeSliceLength = document.getElementById('randomizeSliceLength').checked;
+                console.log('⚙️ Randomize slice length:', randomizeSliceLength);
+
+                // Create transport instance with configuration
+                const transport = new DemoTransport('http://localhost:3000', randomizeSliceLength);
+                console.log('🚀 Created DemoTransport instance with randomizeSliceLength:', randomizeSliceLength);
 
                 // Create secure client
                 secureClient = new SecureAudioClient(transport, {
@@ -343,12 +366,13 @@
                 // Display session information
                 displaySessionInfo(currentSession.sessionInfo, true);
 
-                // Create secure player with client
+                // Create secure player with client and selected strategies
                 const { bufferStrategy, prefetchStrategy } = getSelectedStrategies();
-                securePlayer = new SecureAudioPlayer(secureClient);
+                securePlayer = new SecureAudioPlayer(secureClient, {
+                    bufferStrategy: bufferStrategy,
+                    prefetchStrategy: prefetchStrategy
+                });
                 console.log('🎵 SecureAudioPlayer created successfully');
-
-                // Note: Buffer strategies are handled by the client, not the player
                 console.log('📊 Using strategies:', { bufferStrategy: bufferStrategy.constructor.name, prefetchStrategy: prefetchStrategy.constructor.name });
 
                 setupSecStreamPlayer();
@@ -476,11 +500,35 @@
         }
 
         function updateStrategy() {
-            if (secureClient && isSecStreamAvailable) {
-                // Note: Buffer strategies are configured on the client, not the player
-                // The strategies were already set when the client was created
-                getSelectedStrategies(); // Update display
-                showStatus('info', '⚙️ Strategy selection updated (applied to client)');
+            if (secureClient && securePlayer && isSecStreamAvailable) {
+                // Get selected strategies
+                const { bufferStrategy, prefetchStrategy } = getSelectedStrategies();
+
+                // Remember playback state
+                const wasPlaying = securePlayer.isPlaying;
+                const currentTime = securePlayer.currentTime;
+
+                // Destroy old player
+                securePlayer.destroy();
+
+                // Create new player with updated strategies
+                securePlayer = new SecureAudioPlayer(secureClient, {
+                    bufferStrategy: bufferStrategy,
+                    prefetchStrategy: prefetchStrategy
+                });
+
+                // Setup event listeners again
+                setupSecStreamPlayer();
+
+                // Restore playback state
+                if (currentTime > 0) {
+                    securePlayer.seekToTime(currentTime, wasPlaying).catch(err => {
+                        console.error('Failed to restore playback after strategy change:', err);
+                    });
+                }
+
+                showStatus('success', `✅ Strategies updated: ${bufferStrategy.constructor.name} / ${prefetchStrategy.constructor.name}`);
+                console.log('📊 Strategies updated:', { bufferStrategy: bufferStrategy.constructor.name, prefetchStrategy: prefetchStrategy.constructor.name });
             } else {
                 getSelectedStrategies(); // Update display even in fallback mode
             }
@@ -532,21 +580,8 @@
                 progressFill.style.width = `${percent}%`;
                 currentTime.textContent = formatTime(seconds);
 
-                // Prefetch upcoming slices for smooth playback (throttled to avoid excessive requests)
-                const currentSlice = securePlayer.currentSlice;
-                const sessionInfo = currentSession?.sessionInfo;
-                if (sessionInfo && currentSlice < sessionInfo.totalSlices - 1) {
-                    // Only prefetch if we don't have enough buffered slices ahead
-                    const nextSlice = currentSlice + 1;
-                    const prefetchCount = Math.min(2, sessionInfo.totalSlices - nextSlice);
-
-                    // Check if we already have the next slice before prefetching
-                    if (!secureClient.isSliceAvailable(nextSlice)) {
-                        secureClient.prefetchSlices(nextSlice, prefetchCount).catch(err =>
-                            console.warn('Prefetch error:', err)
-                        );
-                    }
-                }
+                // Note: Prefetching is now handled automatically by the PrefetchStrategy
+                // No manual prefetch calls needed here
             });
 
             // Handle retry events for slice loading
@@ -662,20 +697,20 @@
                         throw new Error('No session information available');
                     }
 
-                    // Only preload if starting from beginning or slice not available
-                    if (currentSlice === 0 || !secureClient.isSliceAvailable(currentSlice)) {
+                    // Only preload current slice if not available
+                    // Prefetching of subsequent slices is handled by PrefetchStrategy
+                    if (!secureClient.isSliceAvailable(currentSlice)) {
                         showStatus('info', '📦 Loading audio slice for playback...');
 
                         try {
-                            // Load current slice and prefetch next ones
+                            // Load current slice only
                             const sliceId = sessionInfo.sliceIds[currentSlice];
                             if (sliceId) {
                                 await secureClient.loadSlice(sliceId);
                             }
-                            await secureClient.prefetchSlices(currentSlice + 1, 2);
-                            console.log('✅ Audio slices loaded successfully');
-                        } catch (prefetchError) {
-                            console.warn('⚠️ Prefetch failed, playing current slice:', prefetchError);
+                            console.log('✅ Audio slice loaded successfully');
+                        } catch (loadError) {
+                            console.warn('⚠️ Slice load failed:', loadError);
                         }
                     }
 
@@ -726,16 +761,6 @@
 
                     progressFill.style.width = `${percent}%`;
                     currentTime.textContent = formatTime(currentSeconds);
-
-                    // Preload next slices for smooth network playbook (less aggressive to avoid multiple requests)
-                    const currentSlice = securePlayer.currentSlice;
-                    if (currentSlice < totalSlices - 1 && currentSlice % 2 === 0) { // Only prefetch every other update
-                        const nextSlice = currentSlice + 1;
-                        const prefetchCount = Math.min(2, totalSlices - nextSlice); // Reduced prefetch count
-                        secureClient.prefetchSlices(nextSlice, prefetchCount).catch(err =>
-                            console.warn('Prefetch error:', err)
-                        );
-                    }
                 } else if (currentAudio) {
                     // Simulate progress for Web Audio fallback only if local isPlaying is true
                     if (!isPlaying) {
