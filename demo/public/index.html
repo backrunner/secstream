@@ -618,6 +618,18 @@
                 console.error('🚨 SecStream error:', event.detail);
             });
 
+            // Handle AudioContext suspension (browser autoplay policy)
+            securePlayer.addEventListener('suspended', (event) => {
+                const { message, state } = event.detail || {};
+                console.warn('[Player] Suspended event - AudioContext blocked by browser autoplay policy:', { message, state });
+
+                // Show user-friendly message
+                showStatus('warning', '🔇 Audio blocked by browser - Click the play button to enable audio playback');
+
+                // Ensure play button shows play state (not playing)
+                setPlayButtonState(false);
+            });
+
             // Drag seeking helper functions
             const updateProgressVisually = (e) => {
                 if (!currentSession) return;

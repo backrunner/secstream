@@ -2,7 +2,7 @@ import type { BufferManagementStrategy, PrefetchStrategy } from '../types/strate
 import type { SecureAudioClient } from './client.js';
 import { BalancedBufferStrategy, LinearPrefetchStrategy } from '../strategies/default.js';
 
-export type PlayerEvent = 'play' | 'pause' | 'stop' | 'timeupdate' | 'ended' | 'error' | 'seek' | 'buffering' | 'buffered';
+export type PlayerEvent = 'play' | 'pause' | 'stop' | 'timeupdate' | 'ended' | 'error' | 'seek' | 'buffering' | 'buffered' | 'suspended';
 
 export interface PlayerState {
   isPlaying: boolean;
@@ -95,6 +95,49 @@ export class SecureAudioPlayer extends EventTarget {
   }
 
   /**
+   * Resume AudioContext and handle browser autoplay policy
+   * @returns true if resumed successfully, false if blocked by browser
+   */
+  private async resumeAudioContext(): Promise<boolean> {
+    if (this.audioContext.state !== 'suspended') {
+      return true; // Already running
+    }
+
+    try {
+      await this.audioContext.resume();
+
+      // Double-check state after resume attempt
+      if (this.audioContext.state === 'suspended') {
+        // Resume was called but context is still suspended (browser blocked it)
+        console.warn('[Player] AudioContext is suspended - user gesture required');
+        this.dispatchEvent(new CustomEvent('suspended', {
+          detail: {
+            message: 'AudioContext was blocked by browser autoplay policy. User interaction required.',
+            state: this.audioContext.state,
+          },
+        }));
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      // Catch errors like "The AudioContext was not allowed to start"
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('[Player] Failed to resume AudioContext:', errorMessage);
+
+      this.dispatchEvent(new CustomEvent('suspended', {
+        detail: {
+          message: errorMessage,
+          state: this.audioContext.state,
+          error,
+        },
+      }));
+
+      return false;
+    }
+  }
+
+  /**
    * Play audio from current position
    * Developers must ensure the current slice is loaded
    */
@@ -102,8 +145,12 @@ export class SecureAudioPlayer extends EventTarget {
     if (this._isPlaying)
       return;
 
-    if (this.audioContext.state === 'suspended') {
-      await this.audioContext.resume();
+    // Try to resume AudioContext (may be blocked by browser)
+    const resumed = await this.resumeAudioContext();
+    if (!resumed) {
+      // AudioContext is suspended and cannot resume without user gesture
+      // Event has been dispatched, return without throwing
+      return;
     }
 
     const sessionInfo = this.client.getSessionInfo();
@@ -333,8 +380,11 @@ export class SecureAudioPlayer extends EventTarget {
       if (shouldResume && this._currentSeekOperationId === operationId) {
         // Ensure we're in playing state and AudioContext is active
         this._isPlaying = true;
-        if (this.audioContext.state === 'suspended') {
-          await this.audioContext.resume();
+        const resumed = await this.resumeAudioContext();
+        if (!resumed) {
+          // AudioContext is suspended, event has been dispatched
+          this._isPlaying = false;
+          return;
         }
         await this.playCurrentSlice();
         // Restart progress updates after resuming from seek
