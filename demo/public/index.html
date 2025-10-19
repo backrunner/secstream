@@ -548,18 +548,19 @@
 
             // Set up player events
             securePlayer.addEventListener('play', () => {
+                console.log('[Player] Play event - Starting playback');
                 setPlayButtonState(true);
                 startBufferStatsUpdates();
-                showStatus('info', '▶️ Playing encrypted stream...');
             });
 
             securePlayer.addEventListener('pause', () => {
+                console.log('[Player] Pause event - Playback paused');
                 setPlayButtonState(false);
                 stopBufferStatsUpdates(); // Stop buffer updates when paused
-                showStatus('info', '⏸️ Secure playback paused');
             });
 
             securePlayer.addEventListener('ended', () => {
+                console.log('[Player] Ended event - Playback completed');
                 setPlayButtonState(false);
 
                 // Update progress bar to 100% completion before stopping updates
@@ -570,11 +571,19 @@
                 }
 
                 stopBufferStatsUpdates();
-                showStatus('success', '🎵 Secure playback completed');
             });
+
+            // Progress bar seeking with drag support
+            let isDragging = false;
+            let dragPercent = 0;
 
             // Handle realtime timeupdate events (replaces setInterval)
             securePlayer.addEventListener('timeupdate', (e) => {
+                // Skip updating progress if user is dragging
+                if (isDragging) {
+                    return;
+                }
+
                 const { currentTime: seconds, duration, progress } = e.detail;
                 const percent = Math.min(progress * 100, 100);
                 progressFill.style.width = `${percent}%`;
@@ -599,6 +608,8 @@
 
             securePlayer.addEventListener('error', (event) => {
                 const { message, retryable, time } = event.detail || {};
+                console.error('[Player] Error event:', { message, retryable, time });
+
                 if (retryable && time !== undefined) {
                     showStatus('error', `❌ ${message} - Click progress bar to retry from ${formatTime(time)}`);
                 } else {
@@ -607,52 +618,87 @@
                 console.error('🚨 SecStream error:', event.detail);
             });
 
-            // Progress bar seeking
-            progressBar.onclick = async (e) => {
+            // Drag seeking helper functions
+            const updateProgressVisually = (e) => {
+                if (!currentSession) return;
+
+                const rect = progressBar.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const percent = Math.max(0, Math.min(1, clickX / rect.width));
+
+                // Calculate target time for display
+                const totalDuration = currentSession.sessionInfo.totalSlices * currentSession.sessionInfo.sliceDuration / 1000;
+                const targetTime = percent * totalDuration;
+
+                // Update UI immediately
+                progressFill.style.width = `${percent * 100}%`;
+                currentTime.textContent = formatTime(targetTime);
+
+                return { percent, targetTime };
+            };
+
+            const performSeek = async (percent, targetTime) => {
                 if (!securePlayer || !currentSession) return;
 
                 // Generate unique operation ID for this seek
                 const operationId = ++currentSeekOperationId;
 
-                const rect = progressBar.getBoundingClientRect();
-                const clickX = e.clientX - rect.left;
-                const percent = Math.max(0, Math.min(1, clickX / rect.width)); // Clamp between 0-1
-
-                // Calculate target time in seconds for precise seeking
-                const totalDuration = currentSession.sessionInfo.totalSlices * currentSession.sessionInfo.sliceDuration / 1000;
-                const targetTime = percent * totalDuration;
-
                 // Remember if we were playing before seeking
                 const wasPlaying = securePlayer.isPlaying;
 
-                // Use the new time-based seeking WITHOUT auto-resume
+                // Use the new time-based seeking
                 try {
-                    showStatus('info', `⏭️ Seeking to ${formatTime(targetTime)}...`);
+                    if (currentSeekOperationId !== operationId) return;
 
-                    // Check if operation was superseded before starting
-                    if (currentSeekOperationId !== operationId) {
-                        return;
-                    }
+                    console.log(`[Seek] Seeking to ${targetTime.toFixed(2)}s (${(percent * 100).toFixed(1)}%)`);
+                    await securePlayer.seekToTime(targetTime, wasPlaying);
 
-                    await securePlayer.seekToTime(targetTime, wasPlaying); // Pass wasPlaying as autoResume
-
-                    // Check if operation was superseded after seeking
-                    if (currentSeekOperationId !== operationId) {
-                        return;
-                    }
-
-                    // Only show success if not superseded
-                    if (currentSeekOperationId === operationId) {
-                        showStatus('success', `✅ Seeked to ${formatTime(targetTime)}`);
-                    }
+                    if (currentSeekOperationId !== operationId) return;
+                    console.log(`[Seek] Seek completed to ${targetTime.toFixed(2)}s`);
                 } catch (seekError) {
-                    // Only handle errors if operation wasn't superseded
                     if (currentSeekOperationId === operationId) {
-                        console.error('❌ Seek failed:', seekError);
-                        showStatus('error', `❌ Seek failed: ${seekError.message}`);
+                        console.error('[Seek] Seek failed:', seekError);
                     }
                 }
             };
+
+            // Mouse drag handlers
+            progressBar.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                const result = updateProgressVisually(e);
+                if (result) {
+                    dragPercent = result.percent;
+                }
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (isDragging) {
+                    const result = updateProgressVisually(e);
+                    if (result) {
+                        dragPercent = result.percent;
+                    }
+                }
+            });
+
+            document.addEventListener('mouseup', (e) => {
+                if (isDragging) {
+                    isDragging = false;
+                    // Perform the actual seek on mouse up
+                    const result = updateProgressVisually(e);
+                    if (result) {
+                        performSeek(result.percent, result.targetTime);
+                    }
+                }
+            });
+
+            // Click handler for single clicks (no drag)
+            progressBar.addEventListener('click', (e) => {
+                const result = updateProgressVisually(e);
+                if (result) {
+                    performSeek(result.percent, result.targetTime);
+                }
+            });
         }
 
         function setupWebAudioPlayer() {
@@ -661,7 +707,7 @@
             setPlayButtonState(false);
             playBtn.onclick = toggleWebAudioPlay;
             totalTime.textContent = formatTime(currentAudio.duration);
-            
+
             // Set fallback stats for Web Audio mode
             bufferSizeEl.textContent = 'N/A';
             networkRequestsEl.textContent = '0';
@@ -677,7 +723,7 @@
                 const targetTime = percent * currentAudio.duration;
 
                 // In real implementation, would seek to targetTime
-                showStatus('info', `⏭️ Would seek to ${formatTime(targetTime)} (Web Audio fallback)`);
+                console.log(`Would seek to ${formatTime(targetTime)} (Web Audio fallback)`);
             };
         }
 
@@ -687,7 +733,6 @@
             try {
                 if (securePlayer.isPlaying) {
                     securePlayer.pause(); // pause() is synchronous, no await needed
-                    showStatus('info', '⏸️ Paused secure playback');
                 } else {
                     // Check if we're resuming from pause or starting fresh
                     const currentSlice = securePlayer.currentSlice;
@@ -700,8 +745,6 @@
                     // Only preload current slice if not available
                     // Prefetching of subsequent slices is handled by PrefetchStrategy
                     if (!secureClient.isSliceAvailable(currentSlice)) {
-                        showStatus('info', '📦 Loading audio slice for playback...');
-
                         try {
                             // Load current slice only
                             const sliceId = sessionInfo.sliceIds[currentSlice];
@@ -715,7 +758,6 @@
                     }
 
                     await securePlayer.play();
-                    showStatus('info', '▶️ Playing secure stream');
                 }
             } catch (error) {
                 showStatus('error', `❌ Playback control error: ${error.message}`);
@@ -732,12 +774,10 @@
                 setPlayButtonState(false);
                 isPlaying = false;
                 stopProgressUpdates();
-                showStatus('info', '⏸️ Web Audio playback paused (simulated)');
             } else {
                 setPlayButtonState(true);
                 isPlaying = true;
                 startProgressUpdates();
-                showStatus('info', '▶️ Web Audio playback started (simulated)');
             }
         }
 
@@ -778,7 +818,6 @@
                         setPlayButtonState(false);
                         isPlaying = false;
                         stopProgressUpdates();
-                        showStatus('success', '🎵 Web Audio playback completed (simulated)');
                     }
                 }
             }, 100);
@@ -799,11 +838,11 @@
                     try {
                         // Get buffer stats from player
                         const stats = securePlayer.getBufferStats();
-                        
+
                         // Update buffer size (number of loaded slices)
                         const bufferSize = stats && typeof stats.bufferSize === 'number' ? stats.bufferSize : 0;
                         bufferSizeEl.textContent = `${bufferSize} slices`;
-                        
+
                         // Also update current slice information for better debugging
                         console.debug('Buffer stats:', {
                             bufferSize,

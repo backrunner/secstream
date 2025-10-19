@@ -384,7 +384,6 @@ body::after {
     height: 100%;
     background: var(--gradient-primary);
     border-radius: 4px;
-    transition: width 0.3s ease;
     position: relative;
 }
 
