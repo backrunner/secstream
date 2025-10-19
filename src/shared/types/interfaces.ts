@@ -41,6 +41,8 @@ export interface SessionInfo {
   /** Whether raw PCM is 32-bit float (true) or integer (false/undefined) */
   isFloat32?: boolean;
   sliceIds: string[]; // Sorted list of slice IDs for the session
+  /** Audio format: 'wav' = raw PCM, 'mp3'/'flac'/'ogg' = compressed (client must decode) */
+  format?: string;
 }
 
 // Legacy key exchange interfaces - marked for backward compatibility

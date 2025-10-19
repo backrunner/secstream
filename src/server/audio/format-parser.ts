@@ -12,6 +12,7 @@ export interface AudioMetadata {
   bitrate?: number;
   dataOffset: number;
   dataLength: number;
+  totalSamples?: number; // For MP3: calculated from duration and sample rate
 }
 
 /**
@@ -108,6 +109,7 @@ function parseWAV(buffer: ArrayBuffer): AudioMetadata {
 
 /**
  * Parses MP3 frame header for metadata
+ * Scans through file to calculate accurate duration
  */
 function parseMP3(buffer: ArrayBuffer): AudioMetadata {
   const view = new DataView(buffer);
@@ -120,7 +122,9 @@ function parseMP3(buffer: ArrayBuffer): AudioMetadata {
     offset = 10 + tagSize;
   }
 
-  // Find first frame header
+  const dataOffset = offset;
+
+  // Find first frame header to get audio parameters
   while (offset < buffer.byteLength - 4) {
     if ((view.getUint16(offset, false) & 0xFFE0) === 0xFFE0) {
       break;
@@ -129,34 +133,79 @@ function parseMP3(buffer: ArrayBuffer): AudioMetadata {
   }
 
   if (offset >= buffer.byteLength - 4) {
-    // Fallback values
+    // Fallback values if no frame found
     return {
       format: 'mp3',
       sampleRate: 44100,
       channels: 2,
-      dataOffset: 0,
-      dataLength: buffer.byteLength,
+      dataOffset,
+      dataLength: buffer.byteLength - dataOffset,
     };
   }
 
-  // Parse MP3 frame header
+  // Parse first frame header
   const header = view.getUint32(offset, false);
 
-  // Sample rate table
-  const sampleRates = [44100, 48000, 32000];
+  // MPEG version
+  const version = (header >> 19) & 0x3;
+  const layer = (header >> 17) & 0x3;
+
+  // Sample rate table for MPEG 1, 2, 2.5
+  const sampleRates = [
+    [44100, 48000, 32000], // MPEG 1
+    [22050, 24000, 16000], // MPEG 2
+    [11025, 12000, 8000],  // MPEG 2.5
+  ];
+  const versionIndex = version === 3 ? 0 : (version === 2 ? 1 : 2);
   const sampleRateIndex = (header >> 10) & 0x3;
-  const sampleRate = sampleRates[sampleRateIndex] || 44100;
+  const sampleRate = sampleRates[versionIndex]?.[sampleRateIndex] || 44100;
 
   // Channel mode
   const channelMode = (header >> 6) & 0x3;
   const channels = channelMode === 3 ? 1 : 2;
 
+  // Bitrate table (kbps) for MPEG 1 Layer 3
+  const bitrateIndex = (header >> 12) & 0xF;
+  const bitrateTable = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+  const bitrate = bitrateTable[bitrateIndex] || 128;
+
+  // Calculate approximate duration by scanning frames
+  // This is more accurate than just using file size
+  let frameCount = 0;
+  let scanOffset = offset;
+  const samplesPerFrame = version === 3 ? 1152 : 576; // MPEG 1 vs MPEG 2/2.5
+
+  // Scan up to 1000 frames or 100KB to estimate (avoid full file scan for large files)
+  const maxScan = Math.min(buffer.byteLength, scanOffset + 100000);
+  while (scanOffset < maxScan - 4 && frameCount < 1000) {
+    if ((view.getUint16(scanOffset, false) & 0xFFE0) === 0xFFE0) {
+      frameCount++;
+      // Calculate frame length: (144 * bitrate * 1000) / sampleRate
+      const frameLength = Math.floor((144 * bitrate * 1000) / sampleRate);
+      scanOffset += frameLength;
+    } else {
+      scanOffset++;
+    }
+  }
+
+  // Estimate total frames from scan ratio
+  const scannedBytes = scanOffset - offset;
+  const totalBytes = buffer.byteLength - dataOffset;
+  const estimatedTotalFrames = scannedBytes > 0 ? Math.floor((totalBytes / scannedBytes) * frameCount) : frameCount;
+
+  // Calculate duration and total samples
+  const duration = (estimatedTotalFrames * samplesPerFrame) / sampleRate;
+  const totalSamples = Math.floor(duration * sampleRate);
+
   return {
     format: 'mp3',
     sampleRate,
     channels,
-    dataOffset: offset,
-    dataLength: buffer.byteLength - offset,
+    bitrate,
+    dataOffset,
+    dataLength: totalBytes,
+    duration,
+    totalSamples,
   };
 }
 
@@ -234,9 +283,9 @@ export function parseAudioMetadata(buffer: ArrayBuffer): AudioMetadata {
 }
 
 /**
- * Extracts raw PCM data from various audio formats
- * Note: For MP3 and FLAC, this only extracts the encoded data.
- * Full decoding would require additional libraries.
+ * Extracts audio data from various formats
+ * Note: Returns compressed data as-is for MP3/FLAC/OGG
+ * Client will decode using Web Audio API
  */
 export function extractAudioData(buffer: ArrayBuffer, metadata: AudioMetadata): ArrayBuffer {
   return buffer.slice(metadata.dataOffset, metadata.dataOffset + metadata.dataLength);
@@ -246,12 +295,22 @@ export function extractAudioData(buffer: ArrayBuffer, metadata: AudioMetadata): 
  * Estimates sample count for different formats
  */
 export function estimateSampleCount(metadata: AudioMetadata): number {
+  // Use pre-calculated totalSamples if available (from MP3 parsing)
+  if (metadata.totalSamples !== undefined) {
+    return metadata.totalSamples;
+  }
+
   switch (metadata.format) {
     case 'wav':
       return metadata.dataLength / (metadata.channels * ((metadata.bitDepth || 16) / 8));
     case 'mp3':
-      // Rough estimate: 1152 samples per frame, estimate frames from bitrate
-      return Math.floor((metadata.dataLength / 144) * 1152); // Very rough estimate
+      // Fallback if totalSamples not calculated
+      if (metadata.duration) {
+        return Math.floor(metadata.duration * metadata.sampleRate);
+      }
+      // Very rough estimate as last resort
+      const estimatedFrames = Math.floor(metadata.dataLength / 417);
+      return estimatedFrames * 1152;
     case 'flac':
       // FLAC frames are variable, rough estimate
       return Math.floor(metadata.dataLength / metadata.channels / ((metadata.bitDepth || 16) / 8));

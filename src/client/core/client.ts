@@ -271,13 +271,22 @@ export class SecureAudioClient<
         throw new Error('Operation cancelled');
       }
 
-      // Convert raw PCM data to AudioBuffer with retry
+      // Convert audio data to AudioBuffer with retry
+      // For WAV (PCM), parse manually; for MP3/FLAC/OGG, use Web Audio API decoder
       const audioBuffer = await this.retryManager.retry(async() => {
         if (loadController.signal.aborted) {
           throw new Error('Operation cancelled');
         }
         try {
-          return this.createAudioBufferFromPCM(audioData, this.sessionInfo!);
+          const format = this.sessionInfo!.format || 'wav';
+          if (format === 'wav') {
+            // Raw PCM data - parse manually for precise control
+            return this.createAudioBufferFromPCM(audioData, this.sessionInfo!);
+          } else {
+            // Compressed format (MP3, FLAC, OGG) - use Web Audio API decoder
+            // This is more efficient than server-side decoding
+            return await this.createAudioBufferFromCompressed(audioData);
+          }
         } catch(error) {
           throw new DecodingError(`Failed to decode slice ${sliceId}`, error as Error);
         }
@@ -473,6 +482,15 @@ export class SecureAudioClient<
     }
 
     return audioBuffer;
+  }
+
+  /**
+   * Create AudioBuffer from compressed audio data (MP3, FLAC, OGG) using Web Audio API
+   */
+  private async createAudioBufferFromCompressed(compressedData: ArrayBuffer): Promise<AudioBuffer> {
+    // Use browser's built-in decoder - supports MP3, AAC, WAV, FLAC, OGG, etc.
+    // This is much more efficient than server-side decoding
+    return await this.audioContext.decodeAudioData(compressedData);
   }
 
   // Mark a slice as played for cleanup purposes

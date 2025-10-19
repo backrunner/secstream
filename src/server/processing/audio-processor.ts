@@ -165,6 +165,7 @@ export class AudioProcessor<
       channels: audioSource.channels,
       bitDepth: audioSource.metadata.bitDepth || 16,
       sliceIds, // Include the sorted list of slice IDs
+      format: audioSource.format, // Include format so client knows how to decode
     };
 
     // On-demand slice cache and in-flight de-duplication to handle concurrency
@@ -366,6 +367,7 @@ export class AudioProcessor<
 
     // Parse audio metadata using the new format parser
     const metadata = parseAudioMetadata(arrayBuffer);
+    // Extract audio data (keeps MP3 compressed, extracts PCM for WAV)
     const audioData = extractAudioData(arrayBuffer, metadata);
     const sampleCount = estimateSampleCount(metadata);
 
@@ -380,7 +382,7 @@ export class AudioProcessor<
   }
 
   private extractAudioSlice(audioSource: AudioSource, startSample: number, endSample: number): ArrayBuffer {
-    // For raw PCM (WAV), we can slice directly
+    // For raw PCM (WAV only), we can slice directly by samples
     if (audioSource.format === 'wav') {
       const bytesPerSample = (audioSource.metadata.bitDepth || 16) / 8;
       const frameSize = audioSource.channels * bytesPerSample;
@@ -390,9 +392,8 @@ export class AudioProcessor<
       return audioSource.data.slice(startByte, endByte);
     }
 
-    // For compressed formats (MP3, FLAC), we need to estimate slice positions
-    // This is a simplified approach - in production, you might want to use
-    // proper audio decoding libraries
+    // For compressed formats (MP3, FLAC, OGG), estimate byte positions
+    // Client will decode these compressed slices using Web Audio API
     const totalBytes = audioSource.data.byteLength;
     const totalSamples = audioSource.length;
     const startByte = Math.floor((startSample / totalSamples) * totalBytes);
