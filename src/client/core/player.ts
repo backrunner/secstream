@@ -103,8 +103,17 @@ export class SecureAudioPlayer extends EventTarget {
       return true; // Already running
     }
 
+    // Create a timeout promise that rejects after 100ms
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('AudioContext resume timeout - likely blocked by autoplay policy')), 100);
+    });
+
     try {
-      await this.audioContext.resume();
+      // Race between resume and timeout
+      await Promise.race([
+        this.audioContext.resume(),
+        timeoutPromise
+      ]);
 
       // Double-check state after resume attempt
       if (this.audioContext.state === 'suspended') {
@@ -121,7 +130,7 @@ export class SecureAudioPlayer extends EventTarget {
 
       return true;
     } catch (error) {
-      // Catch errors like "The AudioContext was not allowed to start"
+      // Either timeout or actual error
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('[Player] Failed to resume AudioContext:', errorMessage);
 
