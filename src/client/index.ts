@@ -51,3 +51,7 @@ export type {
   PrefetchStrategy,
   StreamingPlayerConfig,
 } from './types/strategies.js';
+
+// Web Worker decryption support
+export { DecryptionWorkerManager } from './workers/decryption-worker-manager.js';
+export type { DecryptionWorkerConfig } from './workers/decryption-worker-types.js';

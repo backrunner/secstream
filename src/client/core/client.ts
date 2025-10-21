@@ -8,6 +8,7 @@ import type {
 } from '../../shared/types/processors.js';
 import type { RetryConfig } from '../network/retry-manager.js';
 import type { Transport } from '../network/transport.js';
+import type { DecryptionWorkerConfig } from '../workers/decryption-worker-types.js';
 import { DeflateCompressionProcessor } from '../../shared/compression/processors/deflate-processor.js';
 import { EcdhP256KeyExchangeProcessor } from '../../shared/crypto/key-exchange/ecdh-p256-processor.js';
 import { AesGcmEncryptionProcessor } from '../../shared/crypto/processors/aes-gcm-processor.js';
@@ -17,6 +18,7 @@ import {
   DecryptionError,
   NetworkError,
 } from '../network/transport.js';
+import { DecryptionWorkerManager } from '../workers/decryption-worker-manager.js';
 
 export interface ClientConfig<
   TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
@@ -29,6 +31,10 @@ export interface ClientConfig<
   prefetchConcurrency: number;
   retryConfig: Partial<RetryConfig>;
   processingConfig?: ProcessingConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>;
+  /** Web Worker configuration for offloading decryption (optional) */
+  workerConfig?: Partial<DecryptionWorkerConfig>;
+  /** URL to the worker script (required if workerConfig.enabled is true) */
+  workerUrl?: string;
 }
 
 export interface AudioSliceData {
@@ -54,6 +60,7 @@ export class SecureAudioClient<
   private retryManager: RetryManager;
   private compressionProcessor: TCompressionProcessor;
   private encryptionProcessor: TEncryptionProcessor;
+  private workerManager: DecryptionWorkerManager | null = null;
 
   public config: ClientConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>;
   private sessionInfo: SessionInfo | null = null;
@@ -85,6 +92,22 @@ export class SecureAudioClient<
     this.compressionProcessor = (processingConfig.compressionProcessor || new DeflateCompressionProcessor()) as TCompressionProcessor;
     this.encryptionProcessor = (processingConfig.encryptionProcessor || new AesGcmEncryptionProcessor()) as TEncryptionProcessor;
     this.keyExchangeProcessor = (processingConfig.keyExchangeProcessor || new EcdhP256KeyExchangeProcessor()) as TKeyExchangeProcessor;
+
+    // Initialize Web Worker manager if enabled
+    if (this.config.workerConfig?.enabled && this.config.workerUrl) {
+      const workerConfig: DecryptionWorkerConfig = {
+        enabled: true,
+        workerCount: this.config.workerConfig.workerCount,
+        maxQueueSize: this.config.workerConfig.maxQueueSize,
+      };
+
+      this.workerManager = new DecryptionWorkerManager(
+        this.config.workerUrl,
+        this.compressionProcessor.getName(),
+        this.encryptionProcessor.getName(),
+        workerConfig,
+      );
+    }
   }
 
   /**
@@ -131,6 +154,16 @@ export class SecureAudioClient<
     // Process key exchange response
     this.sessionKey = await this.keyExchangeProcessor.processKeyExchangeResponse(keyExchangeResponse) as TKey;
     this.sessionInfo = keyExchangeResponse.sessionInfo;
+
+    // Initialize worker manager if configured
+    if (this.workerManager) {
+      try {
+        await this.workerManager.initialize();
+      } catch(error) {
+        console.warn('Failed to initialize Web Worker, falling back to main thread:', error);
+        this.workerManager = null;
+      }
+    }
 
     // Align decode context sample rate with source to preserve quality
     try {
@@ -391,12 +424,39 @@ export class SecureAudioClient<
 
   /**
    * Decrypt slice data using configurable processor
+   * Uses Web Worker if configured, otherwise falls back to main thread
    */
   private async decryptSlice(encryptedSlice: EncryptedSlice): Promise<ArrayBuffer> {
     if (!this.sessionKey) {
       throw new Error('Session key not available');
     }
 
+    // Try using Web Worker if available
+    if (this.workerManager) {
+      try {
+        // Convert session key to transferable type
+        let transferableKey: ArrayBuffer | string;
+        if (this.sessionKey instanceof ArrayBuffer) {
+          transferableKey = this.sessionKey;
+        } else if (typeof this.sessionKey === 'string') {
+          transferableKey = this.sessionKey;
+        } else if (this.sessionKey instanceof CryptoKey) {
+          // CryptoKey cannot be transferred to workers easily
+          // Fall back to main thread for CryptoKey
+          throw new TypeError('CryptoKey not supported in workers, using main thread');
+        } else {
+          // Unknown key type, fall back to main thread
+          throw new TypeError('Unknown key type, using main thread');
+        }
+
+        return await this.workerManager.decryptSlice(encryptedSlice, transferableKey);
+      } catch(error) {
+        // Log warning and fall through to main thread decryption
+        console.warn('Worker decryption failed, falling back to main thread:', error);
+      }
+    }
+
+    // Main thread decryption (fallback or default)
     // Data is binary - no encoding conversion needed
     const encryptedData = encryptedSlice.encryptedData;
     const metadata: CryptoMetadata = { iv: encryptedSlice.iv };
@@ -528,6 +588,12 @@ export class SecureAudioClient<
     this.cancelPendingLoads();
     this.audioBuffers.clear();
     this.playedSlices.clear();
+
+    // Clean up worker manager
+    if (this.workerManager) {
+      this.workerManager.destroy();
+      this.workerManager = null;
+    }
 
     if (this.audioContext.state !== 'closed') {
       this.audioContext.close();

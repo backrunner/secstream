@@ -2,7 +2,7 @@
   "name": "secstream",
   "type": "module",
   "version": "0.1.1",
-  "packageManager": "pnpm@10.18.3",
+  "packageManager": "pnpm@10.19.0",
   "description": "Secure audio streaming library with client/server components",
   "author": "BackRunner",
   "license": "MIT",
@@ -21,6 +21,10 @@
       "types": "./dist/client/index.d.ts",
       "import": "./dist/client/index.js",
       "default": "./dist/client/index.js"
+    },
+    "./client/worker": {
+      "import": "./dist/client/decryption-worker.js",
+      "default": "./dist/client/decryption-worker.js"
     },
     "./package.json": "./package.json"
   },
@@ -51,7 +55,7 @@
     "@rollup/plugin-commonjs": "^28.0.8",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-typescript": "^12.1.4",
-    "@types/node": "^24.8.1",
+    "@types/node": "^24.9.1",
     "@types/web": "^0.0.166",
     "eslint": "^9.38.0",
     "rimraf": "^6.0.1",

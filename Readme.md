@@ -53,18 +53,23 @@ export default app
 ### Client Side (Browser)
 
 ```typescript
-import { SecStreamClient } from 'secstream/client'
+import {
+  SecStreamClient,
+  BalancedBufferStrategy,
+  LinearPrefetchStrategy
+} from 'secstream/client'
 
-// Create client
+// Create client with strategies
 const client = new SecStreamClient({
-  serverUrl: 'https://your-server.com',
-  bufferSize: 5,
-  prefetchSize: 3
+  serverUrl: 'https://your-server.com'
 })
 
-// Load and play audio
+// Load and play audio with custom strategies
 const audioFile = document.getElementById('audioInput').files[0]
-const player = await client.createSession(audioFile)
+const player = await client.createSession(audioFile, {
+  bufferStrategy: new BalancedBufferStrategy(),  // or ConservativeBufferStrategy, AggressiveBufferStrategy
+  prefetchStrategy: new LinearPrefetchStrategy() // or AdaptivePrefetchStrategy, NoPrefetchStrategy
+})
 await player.play()
 
 // Control playback
@@ -554,10 +559,29 @@ const sessionManager = new SessionManager({
 ### Client Configuration
 
 ```typescript
+import {
+  SecStreamClient,
+  BalancedBufferStrategy,
+  ConservativeBufferStrategy,
+  AggressiveBufferStrategy,
+  LinearPrefetchStrategy,
+  AdaptivePrefetchStrategy,
+  NoPrefetchStrategy
+} from 'secstream/client'
+
 const client = new SecStreamClient({
-  serverUrl: 'https://api.example.com',
-  bufferSize: 5,    // Memory usage vs. smoothness tradeoff
-  prefetchSize: 3   // Network efficiency vs. memory usage
+  serverUrl: 'https://api.example.com'
+})
+
+// Create player with custom strategies
+const player = await client.createSession(audioFile, {
+  bufferStrategy: new BalancedBufferStrategy(),     // Balanced memory vs. smoothness (default)
+  // bufferStrategy: new ConservativeBufferStrategy(), // Keep fewer slices (lower memory)
+  // bufferStrategy: new AggressiveBufferStrategy(),   // Keep more slices (smoother playback)
+
+  prefetchStrategy: new LinearPrefetchStrategy()    // Linear prefetch ahead (default)
+  // prefetchStrategy: new AdaptivePrefetchStrategy(), // Adaptive based on playback
+  // prefetchStrategy: new NoPrefetchStrategy()        // No prefetching (minimal network)
 })
 ```
 

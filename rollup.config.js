@@ -56,4 +56,7 @@ export default [
   // Server bundle
   createConfig('src/server/index.ts', 'dist/server/index.js'),
   createDtsConfig('src/server/index.ts', 'dist/server/index.d.ts'),
+
+  // Web Worker for client-side decryption (standalone bundle)
+  createConfig('src/client/workers/decryption-worker.ts', 'dist/client/decryption-worker.js'),
 ];
