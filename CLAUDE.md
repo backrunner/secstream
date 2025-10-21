@@ -68,6 +68,182 @@ const sessionManager = new SessionManager({
 // Session B might produce: [5.3s, 2.9s, 6.8s, 4.4s, ...]
 ```
 
+### 6. Multi-Track Sessions
+The library supports multi-track sessions for playlist and album streaming with optimized performance:
+
+**Architecture:**
+- **One session, multiple tracks** - Each track has its own encryption key for security isolation
+- **Lazy key exchange** - Track keys are initialized on-demand when first accessed
+- **Smart prefetch** - Automatically prefetch next track's first slices near end of current track
+- **Parallel processing** - Server can process multiple tracks concurrently during upload
+- **Backward compatible** - Single-track sessions continue to work seamlessly
+- **Transport flexibility** - No assumptions about how sessions are created; developers implement their own upload strategy
+
+**Key Interfaces:**
+```typescript
+export interface TrackInfo {
+  trackId: string;              // Unique identifier for this track
+  trackIndex: number;           // Zero-based position in session
+  totalSlices: number;          // Number of slices for this track
+  sliceDuration: number;        // Duration per slice in ms
+  sampleRate: number;           // Sample rate in Hz
+  channels: number;             // Audio channels (1=mono, 2=stereo)
+  sliceIds: string[];          // Slice IDs for this track
+  duration: number;            // Total duration in seconds
+  title?: string;              // Track metadata
+  artist?: string;
+  album?: string;
+}
+
+export interface SessionInfo {
+  sessionId: string;
+  tracks?: TrackInfo[];        // Multi-track session: array of all tracks
+  activeTrackId?: string;      // Currently active track ID
+  // Backward compatible single-track fields...
+  totalSlices: number;
+  sliceDuration: number;
+  sliceIds: string[];
+}
+```
+
+**Client Usage:**
+```typescript
+// Initialize session (lazy key exchange)
+const sessionInfo = await client.initializeSession(sessionId);
+
+// Switch to a specific track (by ID or index)
+await client.switchToTrack('track_id');
+await client.switchToTrack(0); // First track
+
+// Load slices for specific track
+await client.loadSlice(sliceId, undefined, trackId);
+
+// Add new track to existing session
+const trackInfo = await client.addTrack(audioFile, {
+  title: 'Song Title',
+  artist: 'Artist Name',
+  album: 'Album Name'
+});
+```
+
+**Player Usage:**
+```typescript
+const player = new SecureAudioPlayer(client, {
+  smartPrefetchNextTrack: true,        // Auto-prefetch next track (default: true)
+  nextTrackPrefetchThreshold: 10,      // Start prefetching 10s before end
+});
+
+// Track navigation
+await player.switchTrack(trackIdOrIndex, autoPlay);
+await player.nextTrack();
+await player.previousTrack();
+
+// Get track information
+const tracks = player.getTracks();
+const currentTrack = player.getCurrentTrack();
+
+// Listen to track changes
+player.addEventListener('trackchange', (event) => {
+  console.log('Switched to:', event.detail.track);
+});
+```
+
+**Server Usage:**
+```typescript
+const sessionManager = new SessionManager({
+  // Multi-track optimizations
+  trackProcessingConcurrency: 3,  // Process 3 tracks in parallel
+  prewarmFirstTrack: true,        // Fully cache first track for instant playback
+});
+
+// Batch upload (playlist/album)
+const sessionId = await sessionManager.createMultiTrackSession([
+  { audioData: track1Data, metadata: { title: 'Track 1' } },
+  { audioData: track2Data, metadata: { title: 'Track 2' } },
+  { audioData: track3Data, metadata: { title: 'Track 3' } },
+]);
+
+// Incremental track addition
+const trackInfo = await sessionManager.addTrack(sessionId, audioData, metadata);
+
+// Lazy key exchange (per-track, on-demand)
+const response = await sessionManager.handleKeyExchange(sessionId, request, trackId);
+
+// Track-aware slice retrieval
+const slice = await sessionManager.getSlice(sessionId, sliceId, trackId);
+```
+
+**Performance Optimizations:**
+- **Parallel track processing**: Configure `trackProcessingConcurrency` to process multiple tracks simultaneously
+- **First track prewarm**: Enable `prewarmFirstTrack` to cache first track during session creation for instant playback
+- **Smart prefetch**: Client automatically prefetches next track's first 3 slices when approaching end
+- **Lazy initialization**: Track keys only exchanged when track is accessed, reducing initial overhead
+- **Track isolation**: Each track has independent buffer management and encryption key
+
+### 7. Buffer Management Architecture
+The library uses a separation of concerns between **storage** (client) and **strategy** (player):
+
+**Client as "Dumb Storage":**
+- The `SecureAudioClient` acts as pure storage - it loads and stores slices on demand
+- No automatic cleanup or prefetch logic in the client
+- Provides programmatic API to manage buffers: `cleanupBuffers()`, `removeSlice()`, `getBufferedSlices()`
+- Supports concurrent loading with abort signals for cancellation
+
+**Player with Strategies:**
+- `SecureAudioPlayer` controls buffer lifecycle using pluggable strategies
+- `BufferManagementStrategy` - Controls when to cleanup old slices
+- `PrefetchStrategy` - Controls which slices to prefetch ahead
+- Default implementations: `BalancedBufferStrategy`, `LinearPrefetchStrategy`
+
+**Client Configuration:**
+```typescript
+const client = new SecureAudioClient(transport, {
+  prefetchConcurrency: 3,  // Max concurrent slice loads
+});
+
+// Programmatic config updates
+client.updateConfig({
+  prefetchConcurrency: 5,
+  retryConfig: { maxRetries: 5 }
+});
+
+// Manual buffer management (if using client without player)
+client.cleanupBuffers(currentSlice, bufferSize, trackId);
+client.removeSlice(sliceIndex, trackId);
+const buffered = client.getBufferedSlices(trackId);
+```
+
+**Player Configuration:**
+```typescript
+const player = new SecureAudioPlayer(client, {
+  bufferStrategy: new BalancedBufferStrategy(),
+  prefetchStrategy: new LinearPrefetchStrategy(),
+  bufferingTimeoutMs: 10000,
+});
+```
+
+**Custom Buffer Strategy Example:**
+```typescript
+class AggressiveBufferStrategy implements BufferManagementStrategy {
+  shouldCleanupBuffer(entry: BufferEntry, currentSlice: number): boolean {
+    // Keep only current slice + 2 ahead
+    return entry.sliceIndex < currentSlice || entry.sliceIndex > currentSlice + 2;
+  }
+
+  onSeek(targetSlice: number, currentSlice: number, buffered: number[]): number[] {
+    // Clear all buffers on seek for maximum memory savings
+    return buffered;
+  }
+}
+```
+
+**Key Benefits:**
+- **Separation of concerns**: Storage logic separate from playback logic
+- **Flexibility**: Use client standalone or with player strategies
+- **Testability**: Strategies can be tested independently
+- **Customization**: Implement custom strategies for specific use cases
+- **Track-aware**: All buffer operations support multi-track sessions
+
 ## Folder Structure and Organization
 
 ```
@@ -391,7 +567,7 @@ const customSessionManager = new SessionManager({
 
 ## Common Pitfalls to Avoid
 
-1. **Never use `any` types** - always use proper generics
+1. **Never use `any` types** - always use proper generics or `unknown`
 2. **Don't hardcode processor types** - use the factory pattern
 3. **Avoid blocking operations** - everything should be async
 4. **Don't ignore error handling** - implement proper retry and fallback
@@ -404,6 +580,10 @@ const customSessionManager = new SessionManager({
 11. **NEVER import server code in client** - `src/client/` must not import from `src/server/`
 12. **NEVER import client code in server** - `src/server/` must not import from `src/client/`
 13. **Always verify bundle separation** - run grep checks after making changes to imports
+14. **Multi-track sessions: Always provide trackId when needed** - For multi-track operations, explicitly pass trackId to avoid confusion
+15. **Multi-track sessions: Initialize tracks lazily** - Don't initialize all track keys upfront, use lazy initialization
+16. **Buffer management: Don't mix client and player responsibilities** - Let player strategies control buffers, not client logic
+17. **Type assertions: Use `unknown` intermediate** - When type assertions are necessary (e.g., `as unknown as T`), use `unknown` as intermediate step
 
 ## Package Information
 
