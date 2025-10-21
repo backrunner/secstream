@@ -31,8 +31,49 @@ export interface SliceIdGenerator {
   getName: () => string;
 }
 
+/**
+ * Track-specific information within a session
+ * Each track represents a single encrypted audio file with its own key
+ */
+export interface TrackInfo {
+  /** Unique identifier for this track */
+  trackId: string;
+  /** Zero-based index position within the session (for ordering) */
+  trackIndex: number;
+  /** Total number of slices for this track */
+  totalSlices: number;
+  /** Duration of each slice in milliseconds */
+  sliceDuration: number;
+  /** Sample rate in Hz (e.g., 44100, 48000) */
+  sampleRate: number;
+  /** Number of audio channels (1 = mono, 2 = stereo) */
+  channels: number;
+  /** Bit depth (16, 24, or 32) */
+  bitDepth?: number;
+  /** Whether raw PCM is 32-bit float (true) or integer (false/undefined) */
+  isFloat32?: boolean;
+  /** Sorted list of slice IDs for this track */
+  sliceIds: string[];
+  /** Audio format: 'wav' = raw PCM, 'mp3'/'flac'/'ogg' = compressed */
+  format?: string;
+  /** Total duration in seconds */
+  duration: number;
+  /** Optional metadata */
+  title?: string;
+  artist?: string;
+  album?: string;
+}
+
 export interface SessionInfo {
   sessionId: string;
+
+  /** Multi-track support: Array of all tracks in this session */
+  tracks?: TrackInfo[];
+  /** Currently active track ID (if multi-track session) */
+  activeTrackId?: string;
+
+  // Backward compatibility: Single-track session fields
+  // When tracks array exists, these refer to the active track or first track
   totalSlices: number;
   sliceDuration: number;
   sampleRate: number;
@@ -44,6 +85,7 @@ export interface SessionInfo {
   /** Audio format: 'wav' = raw PCM, 'mp3'/'flac'/'ogg' = compressed (client must decode) */
   format?: string;
 }
+
 
 // Legacy key exchange interfaces - marked for backward compatibility
 export interface LegacyKeyExchangeRequest {
@@ -60,10 +102,12 @@ export interface LegacyKeyExchangeResponse {
 export interface SliceRequest {
   sessionId: string;
   sliceId: string;
+  trackId?: string; // Optional: for multi-track sessions
 }
 
 export interface EncryptedSlice {
   id: string;
+  trackId?: string; // Optional: which track this slice belongs to (for multi-track sessions)
   encryptedData: ArrayBuffer; // Pure binary data
   iv: ArrayBuffer; // Binary IV
   sequence: number;

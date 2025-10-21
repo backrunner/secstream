@@ -1,8 +1,9 @@
+import type { TrackInfo } from '../../shared/types/interfaces.js';
 import type { BufferManagementStrategy, PrefetchStrategy } from '../types/strategies.js';
 import type { SecureAudioClient } from './client.js';
 import { BalancedBufferStrategy, LinearPrefetchStrategy } from '../strategies/default.js';
 
-export type PlayerEvent = 'play' | 'pause' | 'stop' | 'timeupdate' | 'ended' | 'error' | 'seek' | 'buffering' | 'buffered' | 'suspended';
+export type PlayerEvent = 'play' | 'pause' | 'stop' | 'timeupdate' | 'ended' | 'error' | 'seek' | 'buffering' | 'buffered' | 'suspended' | 'trackchange';
 
 export interface PlayerState {
   isPlaying: boolean;
@@ -13,12 +14,20 @@ export interface PlayerState {
   duration: number;
   currentSlice: number;
   totalSlices: number;
+  // Multi-track support
+  currentTrack?: TrackInfo;
+  trackCount?: number;
+  trackIndex?: number;
 }
 
 export interface PlayerConfig {
   bufferingTimeoutMs?: number; // Default: 10000ms (10 seconds)
   bufferStrategy?: BufferManagementStrategy; // Default: BalancedBufferStrategy
   prefetchStrategy?: PrefetchStrategy; // Default: LinearPrefetchStrategy
+  /** Enable smart prefetch of next track when approaching end (default: true) */
+  smartPrefetchNextTrack?: boolean;
+  /** How close to end (in seconds) to start prefetching next track (default: 10) */
+  nextTrackPrefetchThreshold?: number;
 }
 
 /**
@@ -50,11 +59,16 @@ export class SecureAudioPlayer extends EventTarget {
   private _bufferingTimeout: number | null = null; // Timeout for buffering state
   private _bufferCleanupTimer: number | null = null; // Periodic buffer cleanup timer
 
+  // Multi-track state
+  private _nextTrackPrefetched = false; // Track if next track's first slices have been prefetched
+
   constructor(client: SecureAudioClient, config: PlayerConfig = {}) {
     super();
     this.client = client;
     this.config = {
       bufferingTimeoutMs: 10000, // Default 10 seconds
+      smartPrefetchNextTrack: true, // Enable by default
+      nextTrackPrefetchThreshold: 10, // Start prefetching 10 seconds before end
       ...config,
     };
     // Reuse client's AudioContext to ensure identical sampleRate and avoid resampling artifacts
@@ -112,7 +126,7 @@ export class SecureAudioPlayer extends EventTarget {
       // Race between resume and timeout
       await Promise.race([
         this.audioContext.resume(),
-        timeoutPromise
+        timeoutPromise,
       ]);
 
       // Double-check state after resume attempt
@@ -129,7 +143,7 @@ export class SecureAudioPlayer extends EventTarget {
       }
 
       return true;
-    } catch (error) {
+    } catch(error) {
       // Either timeout or actual error
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('[Player] Failed to resume AudioContext:', errorMessage);
@@ -253,6 +267,98 @@ export class SecureAudioPlayer extends EventTarget {
 
     this.stopProgressUpdates();
     this.dispatchEvent(new CustomEvent('ended'));
+  }
+
+  /**
+   * Switch to a different track within the session
+   * @param trackIdOrIndex - Track ID (string) or index (number)
+   * @param autoPlay - Whether to automatically start playing the new track
+   */
+  async switchTrack(trackIdOrIndex: string | number, autoPlay: boolean = false): Promise<void> {
+    const wasPlaying = this._isPlaying;
+
+    // Stop current playback
+    this.stop();
+
+    // Switch track on client
+    const trackInfo = await this.client.switchToTrack(trackIdOrIndex);
+
+    // Reset playback state for new track
+    this._currentSliceIndex = 0;
+    this._sliceOffsetSeconds = 0;
+    this._pausedAt = 0;
+    this._playbackStartTime = 0;
+    this._isEnded = false;
+    this._nextTrackPrefetched = false;
+
+    // Dispatch track change event
+    this.dispatchEvent(new CustomEvent('trackchange', {
+      detail: { track: trackInfo },
+    }));
+
+    // Auto-play if requested or if was playing before
+    if (autoPlay || wasPlaying) {
+      await this.play();
+    }
+  }
+
+  /**
+   * Switch to the next track in the session
+   * @param autoPlay - Whether to automatically start playing (default: true)
+   */
+  async nextTrack(autoPlay: boolean = true): Promise<void> {
+    const tracks = this.client.getTracks();
+    if (tracks.length === 0) {
+      throw new Error('No tracks available');
+    }
+
+    const activeTrackId = this.client.getActiveTrackId();
+    const currentTrackIndex = tracks.findIndex(t => t.trackId === activeTrackId);
+
+    if (currentTrackIndex === -1 || currentTrackIndex >= tracks.length - 1) {
+      // Already at last track or track not found
+      throw new Error('No next track available');
+    }
+
+    await this.switchTrack(currentTrackIndex + 1, autoPlay);
+  }
+
+  /**
+   * Switch to the previous track in the session
+   * @param autoPlay - Whether to automatically start playing (default: true)
+   */
+  async previousTrack(autoPlay: boolean = true): Promise<void> {
+    const tracks = this.client.getTracks();
+    if (tracks.length === 0) {
+      throw new Error('No tracks available');
+    }
+
+    const activeTrackId = this.client.getActiveTrackId();
+    const currentTrackIndex = tracks.findIndex(t => t.trackId === activeTrackId);
+
+    if (currentTrackIndex <= 0) {
+      // Already at first track or track not found
+      throw new Error('No previous track available');
+    }
+
+    await this.switchTrack(currentTrackIndex - 1, autoPlay);
+  }
+
+  /**
+   * Get all available tracks in the session
+   */
+  getTracks(): TrackInfo[] {
+    return this.client.getTracks();
+  }
+
+  /**
+   * Get current track information
+   */
+  getCurrentTrack(): TrackInfo | null {
+    const trackId = this.client.getActiveTrackId();
+    if (!trackId)
+      return null;
+    return this.client.getTrackInfo(trackId);
   }
 
   /**
@@ -515,6 +621,9 @@ export class SecureAudioPlayer extends EventTarget {
    */
   getState(): PlayerState {
     const sessionInfo = this.client.getSessionInfo();
+    const currentTrack = this.getCurrentTrack();
+    const tracks = this.client.getTracks();
+
     return {
       isPlaying: this._isPlaying,
       isPaused: this._isPaused,
@@ -524,6 +633,10 @@ export class SecureAudioPlayer extends EventTarget {
       duration: sessionInfo ? (sessionInfo.totalSlices * sessionInfo.sliceDuration) / 1000 : 0,
       currentSlice: this._currentSliceIndex,
       totalSlices: sessionInfo ? sessionInfo.totalSlices : 0,
+      // Multi-track info
+      currentTrack: currentTrack || undefined,
+      trackCount: tracks.length > 0 ? tracks.length : undefined,
+      trackIndex: currentTrack ? currentTrack.trackIndex : undefined,
     };
   }
 
@@ -853,8 +966,80 @@ export class SecureAudioPlayer extends EventTarget {
         if (slicesToPrefetch.length > 0) {
           this.prefetchSlicesAsync(slicesToPrefetch);
         }
+
+        // Smart prefetch next track when approaching end of current track
+        if (this.config.smartPrefetchNextTrack && !this._nextTrackPrefetched) {
+          this.checkAndPrefetchNextTrack();
+        }
       }
     }, 16); // ~60fps
+  }
+
+  /**
+   * Check if we're near the end of current track and prefetch next track if needed
+   */
+  private checkAndPrefetchNextTrack(): void {
+    const tracks = this.client.getTracks();
+    if (tracks.length <= 1)
+      return; // No next track available
+
+    const activeTrackId = this.client.getActiveTrackId();
+    if (!activeTrackId)
+      return;
+
+    const currentTrackIndex = tracks.findIndex(t => t.trackId === activeTrackId);
+    if (currentTrackIndex === -1 || currentTrackIndex >= tracks.length - 1) {
+      return; // Last track or not found
+    }
+
+    const currentTime = this.getCurrentTime();
+    const duration = this.duration;
+    const timeRemaining = duration - currentTime;
+
+    // Check if we're within the prefetch threshold
+    const threshold = this.config.nextTrackPrefetchThreshold || 10;
+    if (timeRemaining <= threshold && timeRemaining > 0) {
+      this._nextTrackPrefetched = true;
+
+      // Prefetch first 2-3 slices of next track asynchronously
+      const nextTrack = tracks[currentTrackIndex + 1];
+      const slicesToPrefetch = Math.min(3, nextTrack.totalSlices);
+
+      // Do this asynchronously to avoid blocking playback
+      this.prefetchNextTrackSlices(nextTrack.trackId, slicesToPrefetch).catch((error) => {
+        console.warn('Failed to prefetch next track:', error);
+      });
+    }
+  }
+
+  /**
+   * Prefetch first N slices of a track
+   */
+  private async prefetchNextTrackSlices(trackId: string, count: number): Promise<void> {
+    const trackInfo = this.client.getTrackInfo(trackId);
+    if (!trackInfo)
+      return;
+
+    // Initialize track key exchange if needed (lazy)
+    try {
+      await this.client.initializeTrack(trackId);
+    } catch(error) {
+      console.warn(`Failed to initialize track ${trackId}:`, error);
+      return;
+    }
+
+    // Prefetch first N slices
+    for (let i = 0; i < Math.min(count, trackInfo.totalSlices); i++) {
+      const sliceId = trackInfo.sliceIds[i];
+      if (!sliceId)
+        continue;
+
+      try {
+        await this.client.loadSlice(sliceId, undefined, trackId);
+      } catch(error) {
+        console.warn(`Failed to prefetch slice ${i} of track ${trackId}:`, error);
+      }
+    }
   }
 
   /**

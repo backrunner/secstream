@@ -1,4 +1,4 @@
-import type { EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
+import type { EncryptedSlice, SessionInfo, TrackInfo } from '../../shared/types/interfaces.js';
 import type {
   CompressionProcessor,
   CryptoMetadata,
@@ -70,12 +70,15 @@ export class SecureAudioClient<
   private workerManager: DecryptionWorkerManager | null = null;
 
   public config: ClientConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>;
-  private sessionInfo: SessionInfo | null = null;
-  private sessionKey: TKey | null = null;
 
-  // Buffer management
-  private audioBuffers = new Map<number, AudioSliceData>();
-  private playedSlices = new Set<number>();
+  // Session and track management
+  private sessionInfo: SessionInfo | null = null;
+  private activeTrackId: string | null = null;
+  private trackKeys = new Map<string, TKey>(); // trackId → encryption key (lazy loaded on track initialization)
+
+  // Multi-track buffer management (trackId → sliceIndex → data)
+  private audioBuffers = new Map<string, Map<number, AudioSliceData>>();
+  private playedSlices = new Map<string, Set<number>>(); // trackId → played slice indices
   private loadingSlices = new Map<string, AbortController>(); // Track slices currently being loaded with abort controllers
 
   constructor(
@@ -163,7 +166,7 @@ export class SecureAudioClient<
 
   /**
    * Initialize session with key exchange
-   * Core framework functionality - handles crypto automatically
+   * Supports both single-track (backward compatible) and multi-track sessions
    */
   async initializeSession(sessionId: string): Promise<SessionInfo> {
     // Initialize key exchange
@@ -181,9 +184,25 @@ export class SecureAudioClient<
       }
     });
 
-    // Process key exchange response
-    this.sessionKey = await this.keyExchangeProcessor.processKeyExchangeResponse(keyExchangeResponse) as TKey;
+    // Store session info
     this.sessionInfo = keyExchangeResponse.sessionInfo;
+
+    // Detect session type (multi-track vs single-track)
+    if (this.sessionInfo.tracks && this.sessionInfo.tracks.length > 0) {
+      // Multi-track session: Don't exchange keys yet (lazy loading)
+      // Set first track as active by default
+      this.activeTrackId = this.sessionInfo.tracks[0].trackId;
+      this.sessionInfo.activeTrackId = this.activeTrackId;
+    } else {
+      // Single-track session (backward compatibility)
+      // Exchange key immediately for the single track
+      const sessionKey = await this.keyExchangeProcessor.processKeyExchangeResponse(keyExchangeResponse) as TKey;
+
+      // Store key with a default trackId for backward compatibility
+      const defaultTrackId = 'default';
+      this.trackKeys.set(defaultTrackId, sessionKey);
+      this.activeTrackId = defaultTrackId;
+    }
 
     // Initialize worker manager if configured
     if (this.workerManager) {
@@ -213,6 +232,159 @@ export class SecureAudioClient<
   }
 
   /**
+   * Get current track information (helper for both single and multi-track)
+   */
+  private getCurrentTrackInfo(): TrackInfo | null {
+    if (!this.sessionInfo) return null;
+
+    // Multi-track session
+    if (this.sessionInfo.tracks && this.sessionInfo.tracks.length > 0) {
+      const track = this.sessionInfo.tracks.find(t => t.trackId === this.activeTrackId);
+      return track || null;
+    }
+
+    // Single-track session (backward compatibility) - construct TrackInfo from SessionInfo
+    return {
+      trackId: 'default',
+      trackIndex: 0,
+      totalSlices: this.sessionInfo.totalSlices,
+      sliceDuration: this.sessionInfo.sliceDuration,
+      sampleRate: this.sessionInfo.sampleRate,
+      channels: this.sessionInfo.channels,
+      bitDepth: this.sessionInfo.bitDepth,
+      isFloat32: this.sessionInfo.isFloat32,
+      sliceIds: this.sessionInfo.sliceIds,
+      format: this.sessionInfo.format,
+      duration: (this.sessionInfo.totalSlices * this.sessionInfo.sliceDuration) / 1000,
+    };
+  }
+
+  /**
+   * Get track information by trackId or index
+   */
+  getTrackInfo(trackIdOrIndex: string | number): TrackInfo | null {
+    if (!this.sessionInfo) return null;
+
+    // Single-track session (backward compatibility)
+    if (!this.sessionInfo.tracks || this.sessionInfo.tracks.length === 0) {
+      if (trackIdOrIndex === 'default' || trackIdOrIndex === 0) {
+        return this.getCurrentTrackInfo();
+      }
+      return null;
+    }
+
+    // Multi-track session
+    if (typeof trackIdOrIndex === 'string') {
+      return this.sessionInfo.tracks.find(t => t.trackId === trackIdOrIndex) || null;
+    } else {
+      return this.sessionInfo.tracks[trackIdOrIndex] || null;
+    }
+  }
+
+  /**
+   * Initialize a track (perform lazy key exchange)
+   * This is called automatically when switching to a new track
+   */
+  async initializeTrack(trackIdOrIndex: string | number): Promise<void> {
+    if (!this.sessionInfo) {
+      throw new Error('Session not initialized');
+    }
+
+    const trackInfo = this.getTrackInfo(trackIdOrIndex);
+    if (!trackInfo) {
+      throw new Error(`Track not found: ${trackIdOrIndex}`);
+    }
+
+    // Check if key already exists
+    if (this.trackKeys.has(trackInfo.trackId)) {
+      return; // Already initialized
+    }
+
+    // Perform key exchange for this track
+    await this.keyExchangeProcessor.initialize();
+    const keyExchangeRequest = await this.keyExchangeProcessor.createKeyExchangeRequest();
+
+    const keyExchangeResponse = await this.retryManager.retry(async() => {
+      try {
+        return await this.transport.performKeyExchange(
+          this.sessionInfo!.sessionId,
+          keyExchangeRequest,
+          trackInfo.trackId // Pass trackId for track-specific key exchange
+        );
+      } catch(error) {
+        throw new NetworkError(`Track key exchange failed for ${trackInfo.trackId}`, error as Error);
+      }
+    });
+
+    // Store the track-specific key
+    const trackKey = await this.keyExchangeProcessor.processKeyExchangeResponse(keyExchangeResponse) as TKey;
+    this.trackKeys.set(trackInfo.trackId, trackKey);
+  }
+
+  /**
+   * Switch to a different track within the session
+   * Performs lazy key exchange if needed
+   */
+  async switchToTrack(trackIdOrIndex: string | number): Promise<TrackInfo> {
+    if (!this.sessionInfo) {
+      throw new Error('Session not initialized');
+    }
+
+    const trackInfo = this.getTrackInfo(trackIdOrIndex);
+    if (!trackInfo) {
+      throw new Error(`Track not found: ${trackIdOrIndex}`);
+    }
+
+    // Initialize track key if not already done (lazy loading)
+    await this.initializeTrack(trackInfo.trackId);
+
+    // Update active track
+    this.activeTrackId = trackInfo.trackId;
+    if (this.sessionInfo.activeTrackId !== undefined) {
+      this.sessionInfo.activeTrackId = this.activeTrackId;
+    }
+
+    // Update backward compatibility fields in sessionInfo
+    this.sessionInfo.totalSlices = trackInfo.totalSlices;
+    this.sessionInfo.sliceDuration = trackInfo.sliceDuration;
+    this.sessionInfo.sampleRate = trackInfo.sampleRate;
+    this.sessionInfo.channels = trackInfo.channels;
+    this.sessionInfo.bitDepth = trackInfo.bitDepth;
+    this.sessionInfo.isFloat32 = trackInfo.isFloat32;
+    this.sessionInfo.sliceIds = trackInfo.sliceIds;
+    this.sessionInfo.format = trackInfo.format;
+
+    return trackInfo;
+  }
+
+  /**
+   * Add a new track to the session (incremental track addition)
+   * Server-side must support this operation
+   */
+  async addTrack(audioData: File | ArrayBuffer, metadata?: { title?: string; artist?: string; album?: string }): Promise<TrackInfo> {
+    if (!this.sessionInfo) {
+      throw new Error('Session not initialized');
+    }
+
+    // Call transport to add track
+    const trackInfo = await this.retryManager.retry(async() => {
+      try {
+        return await this.transport.addTrack(this.sessionInfo!.sessionId, audioData, metadata);
+      } catch(error) {
+        throw new NetworkError('Failed to add track', error as Error);
+      }
+    });
+
+    // Add to session tracks array
+    if (!this.sessionInfo.tracks) {
+      this.sessionInfo.tracks = [];
+    }
+    this.sessionInfo.tracks.push(trackInfo);
+
+    return trackInfo;
+  }
+
+  /**
    * Check if there are any pending slice loading operations
    */
   hasPendingLoads(): boolean {
@@ -231,41 +403,70 @@ export class SecureAudioClient<
   }
 
   /**
-   * Load slice with buffering strategy
+   * Load slice with buffering strategy (track-aware)
    * Framework manages caching and decryption
    */
-  async loadSlice(sliceId: string, abortSignal?: AbortSignal): Promise<AudioSliceData> {
-    if (!this.sessionInfo || !this.sessionKey) {
+  async loadSlice(sliceId: string, abortSignal?: AbortSignal, trackId?: string): Promise<AudioSliceData> {
+    if (!this.sessionInfo) {
       throw new Error('Session not initialized');
     }
 
-    // Get sequence from slice ID using the session info
-    const sequence = this.sessionInfo.sliceIds.indexOf(sliceId);
+    // Determine which track to load from
+    const targetTrackId = trackId || this.activeTrackId;
+    if (!targetTrackId) {
+      throw new Error('No active track');
+    }
+
+    // Get track info
+    const trackInfo = this.getTrackInfo(targetTrackId);
+    if (!trackInfo) {
+      throw new Error(`Track not found: ${targetTrackId}`);
+    }
+
+    // Ensure track is initialized (key exchange done)
+    if (!this.trackKeys.has(targetTrackId)) {
+      await this.initializeTrack(targetTrackId);
+    }
+
+    const trackKey = this.trackKeys.get(targetTrackId);
+    if (!trackKey) {
+      throw new Error(`Track key not available for ${targetTrackId}`);
+    }
+
+    // Get sequence from slice ID using track's slice IDs
+    const sequence = trackInfo.sliceIds.indexOf(sliceId);
     if (sequence === -1) {
       throw new Error(`Invalid slice ID: ${sliceId}`);
     }
 
+    // Initialize track buffer if needed
+    if (!this.audioBuffers.has(targetTrackId)) {
+      this.audioBuffers.set(targetTrackId, new Map());
+    }
+    const trackBuffer = this.audioBuffers.get(targetTrackId)!;
+
     // Check if slice is already loaded
-    const cached = this.audioBuffers.get(sequence);
+    const cached = trackBuffer.get(sequence);
     if (cached) {
       return cached;
     }
 
     // Check if slice is currently being loaded
-    const existingController = this.loadingSlices.get(sliceId);
+    const loadingKey = `${targetTrackId}:${sliceId}`;
+    const existingController = this.loadingSlices.get(loadingKey);
     if (existingController) {
       // If we have a new abort signal, cancel the existing load and start fresh
       if (abortSignal) {
         existingController.abort();
-        this.loadingSlices.delete(sliceId);
+        this.loadingSlices.delete(loadingKey);
       } else {
         // Wait for the ongoing loading to complete
         return new Promise<AudioSliceData>((resolve, reject) => {
           const checkLoading = (): void => {
-            const cached = this.audioBuffers.get(sequence);
+            const cached = trackBuffer.get(sequence);
             if (cached) {
               resolve(cached);
-            } else if (!this.loadingSlices.has(sliceId)) {
+            } else if (!this.loadingSlices.has(loadingKey)) {
               // Loading failed, reject
               reject(new Error(`Slice loading failed: ${sliceId}`));
             } else {
@@ -292,7 +493,7 @@ export class SecureAudioClient<
     }
 
     // Mark slice as being loaded
-    this.loadingSlices.set(sliceId, loadController);
+    this.loadingSlices.set(loadingKey, loadController);
 
     try {
       // Check if cancelled before starting
@@ -306,7 +507,7 @@ export class SecureAudioClient<
           throw new Error('Operation cancelled');
         }
         try {
-          return await this.transport.fetchSlice(this.sessionInfo!.sessionId, sliceId);
+          return await this.transport.fetchSlice(this.sessionInfo!.sessionId, sliceId, targetTrackId);
         } catch(error) {
           throw new NetworkError(`Failed to fetch slice ${sliceId}`, error as Error);
         }
@@ -317,13 +518,13 @@ export class SecureAudioClient<
         throw new Error('Operation cancelled');
       }
 
-      // Decrypt and decompress the slice with retry
+      // Decrypt and decompress the slice with retry (using track-specific key)
       const audioData = await this.retryManager.retry(async() => {
         if (loadController.signal.aborted) {
           throw new Error('Operation cancelled');
         }
         try {
-          return await this.decryptSlice(encryptedSlice);
+          return await this.decryptSlice(encryptedSlice, trackKey);
         } catch(error) {
           throw new DecryptionError(`Failed to decrypt slice ${sliceId}`, error as Error);
         }
@@ -341,10 +542,10 @@ export class SecureAudioClient<
           throw new Error('Operation cancelled');
         }
         try {
-          const format = this.sessionInfo!.format || 'wav';
+          const format = trackInfo.format || 'wav';
           if (format === 'wav') {
             // Raw PCM data - parse manually for precise control
-            return this.createAudioBufferFromPCM(audioData, this.sessionInfo!);
+            return this.createAudioBufferFromPCM(audioData, trackInfo);
           } else {
             // Compressed format (MP3, FLAC, OGG) - use Web Audio API decoder
             // This is more efficient than server-side decoding
@@ -365,8 +566,8 @@ export class SecureAudioClient<
         sequence: encryptedSlice.sequence,
       };
 
-      // Store in buffer only if not cancelled
-      this.audioBuffers.set(sequence, sliceData);
+      // Store in track-specific buffer only if not cancelled
+      trackBuffer.set(sequence, sliceData);
 
       return sliceData;
     } catch(error) {
@@ -378,36 +579,42 @@ export class SecureAudioClient<
       throw error;
     } finally {
       // Always remove from loading set when done (success, failure, or cancellation)
-      this.loadingSlices.delete(sliceId);
+      this.loadingSlices.delete(loadingKey);
     }
   }
 
   /**
-   * Prefetch multiple slices for smooth playback
+   * Prefetch multiple slices for smooth playback (track-aware)
    * Framework buffer strategy - developers can customize this
    */
-  async prefetchSlices(startSlice: number, count: number): Promise<void> {
+  async prefetchSlices(startSlice: number, count: number, trackId?: string): Promise<void> {
     if (!this.sessionInfo)
       return;
+
+    const targetTrackId = trackId || this.activeTrackId;
+    if (!targetTrackId) return;
+
+    const trackInfo = this.getTrackInfo(targetTrackId);
+    if (!trackInfo) return;
 
     // Limit concurrency for prefetch to reduce contention and maintain responsiveness
     const tasks: Array<() => Promise<void>> = [];
 
     for (let i = 0; i < count; i++) {
       const sliceIndex = startSlice + i;
-      if (sliceIndex >= this.sessionInfo.totalSlices)
+      if (sliceIndex >= trackInfo.totalSlices)
         break;
 
-      const sliceId = this.sessionInfo.sliceIds[sliceIndex];
+      const sliceId = trackInfo.sliceIds[sliceIndex];
       if (!sliceId)
         continue;
 
-      if (this.audioBuffers.has(sliceIndex))
+      if (this.isSliceAvailable(sliceIndex, targetTrackId))
         continue;
 
       tasks.push(async() => {
         try {
-          await this.loadSlice(sliceId);
+          await this.loadSlice(sliceId, undefined, targetTrackId);
         } catch(error) {
           if (!(error instanceof Error && error.message === 'Operation cancelled')) {
             console.warn(`Failed to prefetch slice ${sliceId}:`, error);
@@ -436,10 +643,14 @@ export class SecureAudioClient<
   }
 
   /**
-   * Get slice data if available
+   * Get slice data if available (track-aware)
    */
-  getSliceData(sequence: number): AudioSliceData | null {
-    return this.audioBuffers.get(sequence) || null;
+  getSliceData(sequence: number, trackId?: string): AudioSliceData | null {
+    const targetTrackId = trackId || this.activeTrackId;
+    if (!targetTrackId) return null;
+
+    const trackBuffer = this.audioBuffers.get(targetTrackId);
+    return trackBuffer?.get(sequence) || null;
   }
 
   /**
@@ -450,24 +661,24 @@ export class SecureAudioClient<
   }
 
   /**
-   * Decrypt slice data using configurable processor
+   * Decrypt slice data using configurable processor (track-aware)
    * Uses Web Worker if configured, otherwise falls back to main thread
    */
-  private async decryptSlice(encryptedSlice: EncryptedSlice): Promise<ArrayBuffer> {
-    if (!this.sessionKey) {
-      throw new Error('Session key not available');
+  private async decryptSlice(encryptedSlice: EncryptedSlice, trackKey: TKey): Promise<ArrayBuffer> {
+    if (!trackKey) {
+      throw new Error('Track key not available');
     }
 
     // Try using Web Worker if available
     if (this.workerManager) {
       try {
-        // Convert session key to transferable type
+        // Convert track key to transferable type
         let transferableKey: ArrayBuffer | string;
-        if (this.sessionKey instanceof ArrayBuffer) {
-          transferableKey = this.sessionKey;
-        } else if (typeof this.sessionKey === 'string') {
-          transferableKey = this.sessionKey;
-        } else if (this.sessionKey instanceof CryptoKey) {
+        if (trackKey instanceof ArrayBuffer) {
+          transferableKey = trackKey;
+        } else if (typeof trackKey === 'string') {
+          transferableKey = trackKey;
+        } else if (trackKey instanceof CryptoKey) {
           // CryptoKey cannot be transferred to workers easily
           // Fall back to main thread for CryptoKey
           throw new TypeError('CryptoKey not supported in workers, using main thread');
@@ -492,7 +703,7 @@ export class SecureAudioClient<
     // Type assertion is safe here because we know the encryption processor accepts TKey type
     const compressedData = await this.encryptionProcessor.decrypt(
       encryptedData,
-      this.sessionKey as Parameters<TEncryptionProcessor['decrypt']>[1],
+      trackKey as Parameters<TEncryptionProcessor['decrypt']>[1],
       metadata,
     );
 
@@ -503,19 +714,27 @@ export class SecureAudioClient<
   }
 
   /**
-   * Manually clean up old buffers based on current playback position
+   * Manually clean up old buffers based on current playback position (track-aware)
    * Note: When using SecureAudioPlayer, buffer cleanup is managed by player strategies.
    * Only call this manually if using the client standalone without a player.
    * @param currentSlice - The current slice being played
    * @param bufferSize - Number of slices to keep in buffer behind current position
+   * @param trackId - Optional track ID (defaults to active track)
    */
-  cleanupBuffers(currentSlice: number, bufferSize: number = DEFAULT_BUFFER_SIZE): void {
-    const bufferStart = Math.max(0, currentSlice - bufferSize);
+  cleanupBuffers(currentSlice: number, bufferSize: number = DEFAULT_BUFFER_SIZE, trackId?: string): void {
+    const targetTrackId = trackId || this.activeTrackId;
+    if (!targetTrackId) return;
 
-    for (const [sequence] of this.audioBuffers) {
-      if (sequence < bufferStart && this.playedSlices.has(sequence)) {
-        this.audioBuffers.delete(sequence);
-        this.playedSlices.delete(sequence);
+    const bufferStart = Math.max(0, currentSlice - bufferSize);
+    const trackBuffer = this.audioBuffers.get(targetTrackId);
+    const playedSet = this.playedSlices.get(targetTrackId);
+
+    if (!trackBuffer || !playedSet) return;
+
+    for (const [sequence] of trackBuffer) {
+      if (sequence < bufferStart && playedSet.has(sequence)) {
+        trackBuffer.delete(sequence);
+        playedSet.delete(sequence);
       }
     }
   }
@@ -523,10 +742,10 @@ export class SecureAudioClient<
   /**
    * Create AudioBuffer from raw PCM data
    */
-  private createAudioBufferFromPCM(pcmData: ArrayBuffer, sessionInfo: SessionInfo): AudioBuffer {
-    const sampleRate = sessionInfo.sampleRate;
-    const channels = sessionInfo.channels;
-    const bitDepth = sessionInfo.bitDepth || 16;
+  private createAudioBufferFromPCM(pcmData: ArrayBuffer, audioInfo: SessionInfo | TrackInfo): AudioBuffer {
+    const sampleRate = audioInfo.sampleRate;
+    const channels = audioInfo.channels;
+    const bitDepth = audioInfo.bitDepth || 16;
 
     // Calculate number of samples per channel
     const bytesPerSample = bitDepth / 8;
@@ -557,7 +776,7 @@ export class SecureAudioClient<
           const intVal = (byte3 << 16) | (byte2 << 8) | byte1;
           // Convert from unsigned to signed
           sample = (intVal > 0x7FFFFF ? intVal - 0x1000000 : intVal) / 8388608.0;
-        } else if (bitDepth === 32 && sessionInfo.isFloat32) {
+        } else if (bitDepth === 32 && audioInfo.isFloat32) {
           // 32-bit float PCM
           sample = dataView.getFloat32(byteOffset, true);
         } else if (bitDepth === 32) {
@@ -584,25 +803,60 @@ export class SecureAudioClient<
     return await this.audioContext.decodeAudioData(compressedData);
   }
 
-  // Mark a slice as played for cleanup purposes
-  markSlicePlayed(sequence: number): void {
-    this.playedSlices.add(sequence);
+  // Mark a slice as played for cleanup purposes (track-aware)
+  markSlicePlayed(sequence: number, trackId?: string): void {
+    const targetTrackId = trackId || this.activeTrackId;
+    if (!targetTrackId) return;
+
+    if (!this.playedSlices.has(targetTrackId)) {
+      this.playedSlices.set(targetTrackId, new Set());
+    }
+    this.playedSlices.get(targetTrackId)!.add(sequence);
   }
 
-  // Check if a slice is available in buffer
-  isSliceAvailable(sequence: number): boolean {
-    return this.audioBuffers.has(sequence);
+  // Check if a slice is available in buffer (track-aware)
+  isSliceAvailable(sequence: number, trackId?: string): boolean {
+    const targetTrackId = trackId || this.activeTrackId;
+    if (!targetTrackId) return false;
+
+    const trackBuffer = this.audioBuffers.get(targetTrackId);
+    return trackBuffer?.has(sequence) || false;
   }
 
-  // Remove a specific slice from buffer
-  removeSlice(sequence: number): void {
-    this.audioBuffers.delete(sequence);
-    this.playedSlices.delete(sequence);
+  // Remove a specific slice from buffer (track-aware)
+  removeSlice(sequence: number, trackId?: string): void {
+    const targetTrackId = trackId || this.activeTrackId;
+    if (!targetTrackId) return;
+
+    const trackBuffer = this.audioBuffers.get(targetTrackId);
+    if (trackBuffer) {
+      trackBuffer.delete(sequence);
+    }
+
+    const playedSet = this.playedSlices.get(targetTrackId);
+    if (playedSet) {
+      playedSet.delete(sequence);
+    }
   }
 
-  // Get all buffered slice indices
-  getBufferedSlices(): number[] {
-    return Array.from(this.audioBuffers.keys());
+  // Get all buffered slice indices (track-aware)
+  getBufferedSlices(trackId?: string): number[] {
+    const targetTrackId = trackId || this.activeTrackId;
+    if (!targetTrackId) return [];
+
+    const trackBuffer = this.audioBuffers.get(targetTrackId);
+    return trackBuffer ? Array.from(trackBuffer.keys()) : [];
+  }
+
+  // Get all tracks in the session
+  getTracks(): TrackInfo[] {
+    if (!this.sessionInfo) return [];
+    return this.sessionInfo.tracks || [];
+  }
+
+  // Get active track ID
+  getActiveTrackId(): string | null {
+    return this.activeTrackId;
   }
 
   // Get total duration in seconds

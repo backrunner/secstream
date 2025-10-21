@@ -1,4 +1,4 @@
-import type { EncryptedSlice, SessionInfo } from '../../shared/types/interfaces.js';
+import type { EncryptedSlice, SessionInfo, TrackInfo } from '../../shared/types/interfaces.js';
 import type { KeyExchangeRequest, KeyExchangeResponse } from '../../shared/types/processors.js';
 
 /**
@@ -6,6 +6,7 @@ import type { KeyExchangeRequest, KeyExchangeResponse } from '../../shared/types
  * Defines HOW to communicate with the server, but not WHAT to communicate
  * Developers have full control over request method, headers, parsing, etc.
  * Uses generic key exchange types for full flexibility
+ * Supports both single-track (backward compatible) and multi-track sessions
  */
 export interface Transport {
   /**
@@ -17,10 +18,14 @@ export interface Transport {
   /**
    * Perform key exchange with server
    * Developer decides: request format, response parsing
+   * @param sessionId - Session identifier
+   * @param request - Key exchange request data
+   * @param trackId - Optional track ID for multi-track sessions (lazy key exchange)
    */
   performKeyExchange: <TRequestData = unknown, TResponseData = unknown, TSessionInfo = SessionInfo>(
     sessionId: string,
-    request: KeyExchangeRequest<TRequestData>
+    request: KeyExchangeRequest<TRequestData>,
+    trackId?: string
   ) => Promise<KeyExchangeResponse<TResponseData, TSessionInfo>>;
 
   /**
@@ -32,8 +37,20 @@ export interface Transport {
   /**
    * Fetch encrypted slice data
    * Developer decides: how to make request, how to parse binary response and metadata
+   * @param sessionId - Session identifier
+   * @param sliceId - Slice identifier
+   * @param trackId - Optional track ID for multi-track sessions
    */
-  fetchSlice: (sessionId: string, sliceId: string) => Promise<EncryptedSlice>;
+  fetchSlice: (sessionId: string, sliceId: string, trackId?: string) => Promise<EncryptedSlice>;
+
+  /**
+   * Add a new track to an existing session (incremental track addition)
+   * Developer decides: how to upload track data, metadata format
+   * @param sessionId - Session identifier
+   * @param audioData - Audio file or buffer to add
+   * @param metadata - Optional track metadata (title, artist, album)
+   */
+  addTrack: (sessionId: string, audioData: File | ArrayBuffer, metadata?: { title?: string; artist?: string; album?: string }) => Promise<TrackInfo>;
 }
 
 /**
