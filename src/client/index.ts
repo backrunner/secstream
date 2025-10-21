@@ -37,6 +37,13 @@ export {
   NoPrefetchStrategy,
 } from './strategies/default.js';
 export type {
+  AdaptivePrefetchStrategyConfig,
+  AggressiveBufferStrategyConfig,
+  BalancedBufferStrategyConfig,
+  ConservativeBufferStrategyConfig,
+  LinearPrefetchStrategyConfig,
+} from './strategies/default.js';
+export type {
   BufferEntry,
   BufferExpirationConfig,
   BufferManagementStrategy,
