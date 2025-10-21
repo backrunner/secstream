@@ -20,16 +20,19 @@ import {
 } from '../network/transport.js';
 import { DecryptionWorkerManager } from '../workers/decryption-worker-manager.js';
 
+// Default configuration constants
+const DEFAULT_PREFETCH_CONCURRENCY = 3;
+const DEFAULT_BUFFER_SIZE = 5;
+const DEFAULT_POLL_INTERVAL_MS = 50;
+
 export interface ClientConfig<
   TCompressionProcessor extends CompressionProcessor = CompressionProcessor,
   TEncryptionProcessor extends EncryptionProcessor = EncryptionProcessor,
   TKeyExchangeProcessor extends KeyExchangeProcessor = KeyExchangeProcessor,
 > {
-  bufferSize: number;
-  prefetchSize: number;
-  /** Maximum concurrent prefetch/loading operations (excludes the active, high-priority load) */
-  prefetchConcurrency: number;
-  retryConfig: Partial<RetryConfig>;
+  /** Maximum concurrent prefetch/loading operations */
+  prefetchConcurrency?: number;
+  retryConfig?: Partial<RetryConfig>;
   processingConfig?: ProcessingConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>;
   /** Web Worker configuration for offloading decryption (optional) */
   workerConfig?: Partial<DecryptionWorkerConfig>;
@@ -44,9 +47,13 @@ export interface AudioSliceData {
 
 /**
  * Secure audio client for encrypted audio streaming
- * Handles key exchange, session management, and buffer strategies
+ * Handles key exchange, session management, and slice storage
  * Uses pluggable transport interface for flexibility
  * Supports customizable compression and encryption processors
+ *
+ * Note: This client acts as "dumb storage" - it loads and stores slices on demand.
+ * Buffer management strategies (prefetch/cleanup) are handled by SecureAudioPlayer.
+ * If using standalone, call cleanupBuffers() manually when needed.
  */
 export class SecureAudioClient<
   TKey = unknown,
@@ -70,7 +77,6 @@ export class SecureAudioClient<
   private audioBuffers = new Map<number, AudioSliceData>();
   private playedSlices = new Set<number>();
   private loadingSlices = new Map<string, AbortController>(); // Track slices currently being loaded with abort controllers
-  private currentSlice = 0;
 
   constructor(
     transport: Transport,
@@ -78,9 +84,7 @@ export class SecureAudioClient<
   ) {
     this.transport = transport;
     this.config = {
-      bufferSize: 5,
-      prefetchSize: 3,
-      prefetchConcurrency: 3,
+      prefetchConcurrency: DEFAULT_PREFETCH_CONCURRENCY,
       retryConfig: {},
       ...config,
     };
@@ -115,6 +119,32 @@ export class SecureAudioClient<
    */
   getAudioContext(): AudioContext {
     return this.audioContext;
+  }
+
+  /**
+   * Get current client configuration
+   */
+  getConfig(): Readonly<ClientConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>> {
+    return { ...this.config };
+  }
+
+  /**
+   * Update client configuration at runtime
+   * @param updates - Partial config object with properties to update
+   */
+  updateConfig(updates: Partial<ClientConfig<TCompressionProcessor, TEncryptionProcessor, TKeyExchangeProcessor>>): void {
+    this.config = {
+      ...this.config,
+      ...updates,
+    };
+
+    // Update retry manager if retry config changed
+    if (updates.retryConfig) {
+      this.retryManager = new RetryManager({
+        ...this.config.retryConfig,
+        ...updates.retryConfig,
+      });
+    }
   }
 
   /**
@@ -240,7 +270,7 @@ export class SecureAudioClient<
               reject(new Error(`Slice loading failed: ${sliceId}`));
             } else {
               // Still loading, check again after a short delay
-              setTimeout(checkLoading, 50);
+              setTimeout(checkLoading, DEFAULT_POLL_INTERVAL_MS);
             }
           };
           checkLoading();
@@ -338,9 +368,6 @@ export class SecureAudioClient<
       // Store in buffer only if not cancelled
       this.audioBuffers.set(sequence, sliceData);
 
-      // Clean up old buffers
-      this.cleanupBuffers();
-
       return sliceData;
     } catch(error) {
       // If operation was cancelled, don't treat as error
@@ -389,7 +416,7 @@ export class SecureAudioClient<
       });
     }
 
-    const concurrency = Math.max(1, this.config.prefetchConcurrency);
+    const concurrency = Math.max(1, this.config.prefetchConcurrency ?? DEFAULT_PREFETCH_CONCURRENCY);
     let index = 0;
     const runners: Promise<void>[] = [];
 
@@ -476,10 +503,14 @@ export class SecureAudioClient<
   }
 
   /**
-   * Clean up old buffers based on strategy
+   * Manually clean up old buffers based on current playback position
+   * Note: When using SecureAudioPlayer, buffer cleanup is managed by player strategies.
+   * Only call this manually if using the client standalone without a player.
+   * @param currentSlice - The current slice being played
+   * @param bufferSize - Number of slices to keep in buffer behind current position
    */
-  private cleanupBuffers(): void {
-    const bufferStart = Math.max(0, this.currentSlice - this.config.bufferSize);
+  cleanupBuffers(currentSlice: number, bufferSize: number = DEFAULT_BUFFER_SIZE): void {
+    const bufferStart = Math.max(0, currentSlice - bufferSize);
 
     for (const [sequence] of this.audioBuffers) {
       if (sequence < bufferStart && this.playedSlices.has(sequence)) {
@@ -556,7 +587,6 @@ export class SecureAudioClient<
   // Mark a slice as played for cleanup purposes
   markSlicePlayed(sequence: number): void {
     this.playedSlices.add(sequence);
-    this.currentSlice = Math.max(this.currentSlice, sequence);
   }
 
   // Check if a slice is available in buffer
