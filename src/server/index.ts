@@ -14,3 +14,6 @@ export type { SessionManagerConfig } from './core/session-manager.js';
 
 export { AudioProcessor } from './processing/audio-processor.js';
 export type { AudioSource, AudioProcessorConfig } from './processing/audio-processor.js';
+
+// Re-export shared types that server developers need
+export type { SessionInfo, TrackInfo } from '../shared/types/interfaces.js';

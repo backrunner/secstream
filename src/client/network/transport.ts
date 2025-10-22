@@ -51,6 +51,15 @@ export interface Transport {
    * @param metadata - Optional track metadata (title, artist, album)
    */
   addTrack: (sessionId: string, audioData: File | ArrayBuffer, metadata?: { title?: string; artist?: string; album?: string }) => Promise<TrackInfo>;
+
+  /**
+   * Remove a track from an existing session (memory cleanup)
+   * Developer decides: how to send removal request, how to handle response
+   * @param sessionId - Session identifier
+   * @param trackIdOrIndex - Track ID (string) or index (number) to remove
+   * @returns Updated session info with remaining tracks
+   */
+  removeTrack: (sessionId: string, trackIdOrIndex: string | number) => Promise<SessionInfo>;
 }
 
 /**

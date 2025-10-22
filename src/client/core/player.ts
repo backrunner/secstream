@@ -1,4 +1,4 @@
-import type { TrackInfo } from '../../shared/types/interfaces.js';
+import type { SessionInfo, TrackInfo } from '../../shared/types/interfaces.js';
 import type { BufferManagementStrategy, PrefetchStrategy } from '../types/strategies.js';
 import type { SecureAudioClient } from './client.js';
 import { BalancedBufferStrategy, LinearPrefetchStrategy } from '../strategies/default.js';
@@ -342,6 +342,48 @@ export class SecureAudioPlayer extends EventTarget {
     }
 
     await this.switchTrack(currentTrackIndex - 1, autoPlay);
+  }
+
+  /**
+   * Remove a track from the session (memory cleanup)
+   * @param trackIdOrIndex - Track ID (string) or index (number) to remove
+   * @param autoSwitchIfActive - If true and removing active track, automatically switch to another track
+   * @returns Updated session info with remaining tracks
+   */
+  async removeTrack(trackIdOrIndex: string | number, autoSwitchIfActive: boolean = true): Promise<SessionInfo> {
+    const trackInfo = this.client.getTrackInfo(trackIdOrIndex);
+    if (!trackInfo) {
+      throw new Error(`Track not found: ${trackIdOrIndex}`);
+    }
+
+    const removingActiveTrack = trackInfo.trackId === this.client.getActiveTrackId();
+
+    // Stop playback if removing the currently playing track
+    if (removingActiveTrack && this._isPlaying) {
+      this.stop();
+    }
+
+    // Reset next track prefetch state since track order may change
+    this._nextTrackPrefetched = false;
+
+    // Call client to remove track (handles memory cleanup)
+    const updatedSessionInfo = await this.client.removeTrack(trackIdOrIndex);
+
+    // If removed active track and autoSwitch is enabled, try to play next available track
+    if (removingActiveTrack && autoSwitchIfActive) {
+      const remainingTracks = this.client.getTracks();
+      if (remainingTracks.length > 0) {
+        // Client has already switched to a new active track, dispatch event
+        const newActiveTrack = this.client.getTrackInfo(this.client.getActiveTrackId()!);
+        if (newActiveTrack) {
+          this.dispatchEvent(new CustomEvent('trackchange', {
+            detail: { track: newActiveTrack, reason: 'track-removed' },
+          }));
+        }
+      }
+    }
+
+    return updatedSessionInfo;
   }
 
   /**

@@ -4,6 +4,7 @@ export type {
   LegacyKeyExchangeRequest as KeyExchangeRequest,
   LegacyKeyExchangeResponse as KeyExchangeResponse,
   SessionInfo,
+  TrackInfo,
 } from '../shared/types/interfaces.js';
 
 // Re-export buffer strategies and core functionality

@@ -124,6 +124,10 @@ const trackInfo = await client.addTrack(audioFile, {
   artist: 'Artist Name',
   album: 'Album Name'
 });
+
+// Remove track to free memory (by ID or index)
+const updatedSessionInfo = await client.removeTrack('track_id');
+await client.removeTrack(0); // Remove first track
 ```
 
 **Player Usage:**
@@ -138,6 +142,9 @@ await player.switchTrack(trackIdOrIndex, autoPlay);
 await player.nextTrack();
 await player.previousTrack();
 
+// Track management with memory cleanup
+await player.removeTrack(trackIdOrIndex, autoSwitchIfActive);
+
 // Get track information
 const tracks = player.getTracks();
 const currentTrack = player.getCurrentTrack();
@@ -145,6 +152,7 @@ const currentTrack = player.getCurrentTrack();
 // Listen to track changes
 player.addEventListener('trackchange', (event) => {
   console.log('Switched to:', event.detail.track);
+  console.log('Reason:', event.detail.reason); // 'user-action' or 'track-removed'
 });
 ```
 
@@ -166,12 +174,22 @@ const sessionId = await sessionManager.createMultiTrackSession([
 // Incremental track addition
 const trackInfo = await sessionManager.addTrack(sessionId, audioData, metadata);
 
+// Remove track to free server memory (by ID or index)
+const updatedSessionInfo = sessionManager.removeTrack(sessionId, trackIdOrIndex);
+
 // Lazy key exchange (per-track, on-demand)
 const response = await sessionManager.handleKeyExchange(sessionId, request, trackId);
 
 // Track-aware slice retrieval
 const slice = await sessionManager.getSlice(sessionId, sliceId, trackId);
 ```
+
+**Memory Management Best Practices:**
+- **Remove unused tracks**: Call `removeTrack()` for tracks that won't be played again to free memory
+- **Server-side cleanup**: Frees encrypted slice cache, track keys, and processor resources
+- **Client-side cleanup**: Frees decrypted buffers, track keys, and pending load operations
+- **Active track handling**: Automatically switches to next available track when removing active track
+- **Cannot remove last track**: Use `destroySession()` instead to clean up entire session
 
 **Performance Optimizations:**
 - **Parallel track processing**: Configure `trackProcessingConcurrency` to process multiple tracks simultaneously

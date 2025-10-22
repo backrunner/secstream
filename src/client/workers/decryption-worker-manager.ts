@@ -204,6 +204,7 @@ export class DecryptionWorkerManager {
       const errorResponse = response as WorkerErrorResponse;
       const task = this.pendingTasks.get(errorResponse.taskId);
       if (task) {
+        console.error('Worker returned error for task', errorResponse.taskId, ':', errorResponse.error);
         task.reject(new Error(errorResponse.error));
         this.pendingTasks.delete(errorResponse.taskId);
       }

@@ -247,10 +247,9 @@ export class SessionManager {
       track.sessionKey = sessionKey;
       track.keyExchangeComplete = true;
 
-      // Process track audio if prewarm is enabled for this track
-      if (this.config.prewarmFirstTrack && track.trackIndex === 0) {
-        await this.processTrackAudio(track, sessionId);
-      }
+      // Process track audio immediately after key exchange to populate sliceIds
+      // This is required for the player to know which slices to request
+      await this.processTrackAudio(track, sessionId);
 
       // Build session info with all tracks
       const sessionInfo = this.buildMultiTrackSessionInfo(session);
@@ -374,7 +373,7 @@ export class SessionManager {
           trackId,
           trackIndex: 0,
           processor: session.processor,
-          trackInfo: this.buildTrackInfoFromSessionInfo(session.sessionInfo, trackId, 0),
+          trackInfo: this.buildTrackInfoFromSessionInfo(session.sessionInfo, trackId, 0, undefined),
           sessionKey: session.sessionKey,
           keyExchangeProcessor: session.keyExchangeProcessor,
           keyExchangeComplete: session.keyExchangeComplete,
@@ -417,6 +416,68 @@ export class SessionManager {
       duration: 0,
       ...metadata,
     };
+  }
+
+  /**
+   * Remove a track from an existing session (memory cleanup)
+   * @param sessionId - Session identifier
+   * @param trackIdOrIndex - Track ID (string) or index (number) to remove
+   * @returns Updated session info with remaining tracks
+   */
+  removeTrack(sessionId: string, trackIdOrIndex: string | number): SessionInfo {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+
+    // Single-track sessions cannot remove their only track
+    if (!session.isMultiTrack) {
+      throw new Error('Cannot remove track from single-track session. Use destroySession() instead.');
+    }
+
+    // Find track to remove
+    let trackId: string | undefined;
+    if (typeof trackIdOrIndex === 'string') {
+      trackId = trackIdOrIndex;
+    } else {
+      trackId = session.trackOrder[trackIdOrIndex];
+    }
+
+    if (!trackId || !session.tracks.has(trackId)) {
+      throw new Error(`Track not found: ${trackIdOrIndex}`);
+    }
+
+    // Cannot remove the last remaining track
+    if (session.tracks.size === 1) {
+      throw new Error('Cannot remove the last track. Use destroySession() instead.');
+    }
+
+    // Get track before removal
+    const track = session.tracks.get(trackId)!;
+
+    // Cleanup track resources
+    if (track.keyExchangeProcessor) {
+      track.keyExchangeProcessor.destroy();
+    }
+
+    // Remove from maps and arrays
+    session.tracks.delete(trackId);
+    const orderIndex = session.trackOrder.indexOf(trackId);
+    if (orderIndex !== -1) {
+      session.trackOrder.splice(orderIndex, 1);
+    }
+
+    // Handle active track removal - switch to next available track
+    if (session.activeTrackId === trackId) {
+      // Try to use the next track in order, or the previous one if this was the last
+      const nextTrackId = session.trackOrder[orderIndex] || session.trackOrder[orderIndex - 1];
+      session.activeTrackId = nextTrackId;
+    }
+
+    session.lastAccessed = new Date();
+
+    // Rebuild and return session info
+    return this.buildMultiTrackSessionInfo(session);
   }
 
   private async processSessionAudio(session: AudioSession, sessionId: string): Promise<void> {
@@ -464,7 +525,7 @@ export class SessionManager {
     );
 
     // Update the track with complete information
-    track.trackInfo = this.buildTrackInfoFromSessionInfo(sessionInfo, track.trackId, track.trackIndex);
+    track.trackInfo = this.buildTrackInfoFromSessionInfo(sessionInfo, track.trackId, track.trackIndex, track.metadata);
     track.getSlice = getSlice;
 
     // Clean up the temporary audio data
@@ -480,8 +541,26 @@ export class SessionManager {
     const tracks: TrackInfo[] = [];
     for (const trackId of session.trackOrder) {
       const track = session.tracks.get(trackId);
-      if (track && track.trackInfo) {
-        tracks.push(track.trackInfo);
+      if (track) {
+        // If track has been processed, use its trackInfo
+        if (track.trackInfo) {
+          tracks.push(track.trackInfo);
+        } else {
+          // Otherwise, create a placeholder TrackInfo (will be filled when track is initialized)
+          tracks.push({
+            trackId: track.trackId,
+            trackIndex: track.trackIndex,
+            totalSlices: 0, // Will be filled when track is processed
+            sliceDuration: this.config.sliceDurationMs || 5000,
+            sampleRate: 0, // Will be filled when track is processed
+            channels: 0, // Will be filled when track is processed
+            sliceIds: [], // Will be filled when track is processed
+            duration: 0, // Will be filled when track is processed
+            title: track.metadata?.title,
+            artist: track.metadata?.artist,
+            album: track.metadata?.album,
+          });
+        }
       }
     }
 
@@ -507,7 +586,7 @@ export class SessionManager {
     };
   }
 
-  private buildTrackInfoFromSessionInfo(sessionInfo: SessionInfo, trackId: string, trackIndex: number): TrackInfo {
+  private buildTrackInfoFromSessionInfo(sessionInfo: SessionInfo, trackId: string, trackIndex: number, metadata?: { title?: string; artist?: string; album?: string }): TrackInfo {
     return {
       trackId,
       trackIndex,
@@ -520,6 +599,9 @@ export class SessionManager {
       sliceIds: sessionInfo.sliceIds,
       format: sessionInfo.format,
       duration: (sessionInfo.totalSlices * sessionInfo.sliceDuration) / 1000,
+      title: metadata?.title,
+      artist: metadata?.artist,
+      album: metadata?.album,
     };
   }
 

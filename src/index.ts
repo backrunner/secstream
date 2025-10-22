@@ -19,6 +19,7 @@ export type {
   SessionInfo,
   SliceIdGenerator,
   SliceRequest,
+  TrackInfo,
 } from './shared/types/interfaces.js';
 
 // Export processor types explicitly to avoid naming conflicts

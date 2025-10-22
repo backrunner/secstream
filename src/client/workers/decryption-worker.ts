@@ -112,6 +112,9 @@ self.onmessage = async(event: MessageEvent<WorkerMessage>) => {
     }
   } catch(error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+
+    console.error('Worker decryption error:', errorMessage, errorStack);
 
     if (message.type === 'decrypt') {
       const response: WorkerResponse = {

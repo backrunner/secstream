@@ -175,6 +175,8 @@ export class SecureAudioClient<
     // Create key exchange request
     const keyExchangeRequest = await this.keyExchangeProcessor.createKeyExchangeRequest();
 
+    console.log(`🔑 Client: Performing initial key exchange for session ${sessionId}`);
+
     // Perform key exchange with retry
     const keyExchangeResponse = await this.retryManager.retry(async() => {
       try {
@@ -184,15 +186,29 @@ export class SecureAudioClient<
       }
     });
 
+    console.log(`📦 Client: Received key exchange response`, {
+      hasSessionInfo: !!keyExchangeResponse.sessionInfo,
+      trackCount: keyExchangeResponse.sessionInfo?.tracks?.length || 0
+    });
+
     // Store session info
     this.sessionInfo = keyExchangeResponse.sessionInfo;
 
     // Detect session type (multi-track vs single-track)
     if (this.sessionInfo.tracks && this.sessionInfo.tracks.length > 0) {
-      // Multi-track session: Don't exchange keys yet (lazy loading)
-      // Set first track as active by default
+      // Multi-track session: Backend automatically initializes first track during initial key exchange
+      // We need to store the key for the first track
+      const sessionKey = await this.keyExchangeProcessor.processKeyExchangeResponse(keyExchangeResponse) as TKey;
+
+      // Set first track as active and store its key
       this.activeTrackId = this.sessionInfo.tracks[0].trackId;
+      this.trackKeys.set(this.activeTrackId, sessionKey);
       this.sessionInfo.activeTrackId = this.activeTrackId;
+
+      console.log(`✅ Client: First track key stored for ${this.activeTrackId}`, {
+        trackInfo: this.sessionInfo.tracks[0],
+        sliceCount: this.sessionInfo.tracks[0].sliceIds?.length || 0
+      });
     } else {
       // Single-track session (backward compatibility)
       // Exchange key immediately for the single track
@@ -235,11 +251,19 @@ export class SecureAudioClient<
    * Get current track information (helper for both single and multi-track)
    */
   private getCurrentTrackInfo(): TrackInfo | null {
-    if (!this.sessionInfo) return null;
+    if (!this.sessionInfo) {
+      console.warn('⚠️ Client: getCurrentTrackInfo called but sessionInfo is null');
+      return null;
+    }
 
     // Multi-track session
     if (this.sessionInfo.tracks && this.sessionInfo.tracks.length > 0) {
       const track = this.sessionInfo.tracks.find(t => t.trackId === this.activeTrackId);
+      if (track) {
+        console.log(`📍 Client: getCurrentTrackInfo returning track ${track.trackId} with ${track.sliceIds?.length || 0} slices`);
+      } else {
+        console.warn(`⚠️ Client: getCurrentTrackInfo could not find activeTrackId=${this.activeTrackId}`);
+      }
       return track || null;
     }
 
@@ -263,7 +287,12 @@ export class SecureAudioClient<
    * Get track information by trackId or index
    */
   getTrackInfo(trackIdOrIndex: string | number): TrackInfo | null {
-    if (!this.sessionInfo) return null;
+    console.log(`🔍 Client: getTrackInfo called with ${trackIdOrIndex}`);
+
+    if (!this.sessionInfo) {
+      console.warn('⚠️ Client: getTrackInfo called but sessionInfo is null');
+      return null;
+    }
 
     // Single-track session (backward compatibility)
     if (!this.sessionInfo.tracks || this.sessionInfo.tracks.length === 0) {
@@ -274,11 +303,20 @@ export class SecureAudioClient<
     }
 
     // Multi-track session
+    let track: TrackInfo | undefined;
     if (typeof trackIdOrIndex === 'string') {
-      return this.sessionInfo.tracks.find(t => t.trackId === trackIdOrIndex) || null;
+      track = this.sessionInfo.tracks.find(t => t.trackId === trackIdOrIndex);
     } else {
-      return this.sessionInfo.tracks[trackIdOrIndex] || null;
+      track = this.sessionInfo.tracks[trackIdOrIndex];
     }
+
+    if (track) {
+      console.log(`✅ Client: getTrackInfo found track ${track.trackId} with ${track.sliceIds?.length || 0} slices`);
+    } else {
+      console.warn(`⚠️ Client: getTrackInfo could not find track for ${trackIdOrIndex}`);
+    }
+
+    return track || null;
   }
 
   /**
@@ -297,8 +335,11 @@ export class SecureAudioClient<
 
     // Check if key already exists
     if (this.trackKeys.has(trackInfo.trackId)) {
+      console.log(`✅ Client: Track key already exists for ${trackInfo.trackId}`);
       return; // Already initialized
     }
+
+    console.log(`🔑 Client: Initializing track key for ${trackInfo.trackId}...`);
 
     // Perform key exchange for this track
     await this.keyExchangeProcessor.initialize();
@@ -316,9 +357,35 @@ export class SecureAudioClient<
       }
     });
 
+    console.log(`📦 Client: Received track key exchange response for ${trackInfo.trackId}`, {
+      hasSessionInfo: !!keyExchangeResponse.sessionInfo,
+      hasUpdatedTrack: !!keyExchangeResponse.sessionInfo?.tracks?.find(t => t.trackId === trackInfo.trackId)
+    });
+
     // Store the track-specific key
     const trackKey = await this.keyExchangeProcessor.processKeyExchangeResponse(keyExchangeResponse) as TKey;
     this.trackKeys.set(trackInfo.trackId, trackKey);
+
+    // Update the specific track's info in sessionInfo with processed data (includes sliceIds)
+    // The backend processes the track audio during key exchange and returns updated sessionInfo
+    if (keyExchangeResponse.sessionInfo && keyExchangeResponse.sessionInfo.tracks) {
+      const updatedTrack = keyExchangeResponse.sessionInfo.tracks.find(t => t.trackId === trackInfo.trackId);
+      if (updatedTrack && this.sessionInfo.tracks) {
+        const trackIndex = this.sessionInfo.tracks.findIndex(t => t.trackId === trackInfo.trackId);
+        if (trackIndex !== -1) {
+          this.sessionInfo.tracks[trackIndex] = updatedTrack;
+          console.log(`✅ Client: Track info updated with ${updatedTrack.sliceIds.length} slices for ${trackInfo.trackId}`);
+        } else {
+          console.warn(`⚠️ Client: Could not find track index for ${trackInfo.trackId} in sessionInfo.tracks`);
+        }
+      } else {
+        console.warn(`⚠️ Client: No updated track found in response for ${trackInfo.trackId}`);
+      }
+    } else {
+      console.warn(`⚠️ Client: No sessionInfo.tracks in key exchange response`);
+    }
+
+    console.log(`✅ Client: Track key initialized for ${trackInfo.trackId}, key type:`, trackKey instanceof CryptoKey ? 'CryptoKey' : typeof trackKey);
   }
 
   /**
@@ -326,6 +393,8 @@ export class SecureAudioClient<
    * Performs lazy key exchange if needed
    */
   async switchToTrack(trackIdOrIndex: string | number): Promise<TrackInfo> {
+    console.log(`🔄 Client: switchToTrack called with ${trackIdOrIndex}`);
+
     if (!this.sessionInfo) {
       throw new Error('Session not initialized');
     }
@@ -335,26 +404,44 @@ export class SecureAudioClient<
       throw new Error(`Track not found: ${trackIdOrIndex}`);
     }
 
+    console.log(`📌 Client: Track info BEFORE initialization:`, {
+      trackId: trackInfo.trackId,
+      sliceCount: trackInfo.sliceIds?.length || 0
+    });
+
     // Initialize track key if not already done (lazy loading)
     await this.initializeTrack(trackInfo.trackId);
 
+    // IMPORTANT: Re-fetch track info after initialization because initializeTrack may have updated sessionInfo
+    const updatedTrackInfo = this.getTrackInfo(trackInfo.trackId);
+    if (!updatedTrackInfo) {
+      throw new Error(`Track not found after initialization: ${trackInfo.trackId}`);
+    }
+
+    console.log(`📌 Client: Track info AFTER initialization:`, {
+      trackId: updatedTrackInfo.trackId,
+      sliceCount: updatedTrackInfo.sliceIds?.length || 0
+    });
+
     // Update active track
-    this.activeTrackId = trackInfo.trackId;
+    this.activeTrackId = updatedTrackInfo.trackId;
     if (this.sessionInfo.activeTrackId !== undefined) {
       this.sessionInfo.activeTrackId = this.activeTrackId;
     }
 
     // Update backward compatibility fields in sessionInfo
-    this.sessionInfo.totalSlices = trackInfo.totalSlices;
-    this.sessionInfo.sliceDuration = trackInfo.sliceDuration;
-    this.sessionInfo.sampleRate = trackInfo.sampleRate;
-    this.sessionInfo.channels = trackInfo.channels;
-    this.sessionInfo.bitDepth = trackInfo.bitDepth;
-    this.sessionInfo.isFloat32 = trackInfo.isFloat32;
-    this.sessionInfo.sliceIds = trackInfo.sliceIds;
-    this.sessionInfo.format = trackInfo.format;
+    this.sessionInfo.totalSlices = updatedTrackInfo.totalSlices;
+    this.sessionInfo.sliceDuration = updatedTrackInfo.sliceDuration;
+    this.sessionInfo.sampleRate = updatedTrackInfo.sampleRate;
+    this.sessionInfo.channels = updatedTrackInfo.channels;
+    this.sessionInfo.bitDepth = updatedTrackInfo.bitDepth;
+    this.sessionInfo.isFloat32 = updatedTrackInfo.isFloat32;
+    this.sessionInfo.sliceIds = updatedTrackInfo.sliceIds;
+    this.sessionInfo.format = updatedTrackInfo.format;
 
-    return trackInfo;
+    console.log(`✅ Client: switchToTrack complete, backward compat sliceIds count: ${this.sessionInfo.sliceIds?.length || 0}`);
+
+    return updatedTrackInfo;
   }
 
   /**
@@ -382,6 +469,79 @@ export class SecureAudioClient<
     this.sessionInfo.tracks.push(trackInfo);
 
     return trackInfo;
+  }
+
+  /**
+   * Remove a track from the session (memory cleanup)
+   * @param trackIdOrIndex - Track ID (string) or index (number) to remove
+   * @returns Updated session info with remaining tracks
+   */
+  async removeTrack(trackIdOrIndex: string | number): Promise<SessionInfo> {
+    if (!this.sessionInfo) {
+      throw new Error('Session not initialized');
+    }
+
+    // Get track info before removal
+    const trackInfo = this.getTrackInfo(trackIdOrIndex);
+    if (!trackInfo) {
+      throw new Error(`Track not found: ${trackIdOrIndex}`);
+    }
+
+    const trackId = trackInfo.trackId;
+
+    // Cancel any pending loads for this track
+    const loadingKeys = Array.from(this.loadingSlices.keys());
+    for (const key of loadingKeys) {
+      if (key.startsWith(`${trackId}:`)) {
+        const controller = this.loadingSlices.get(key);
+        if (controller) {
+          controller.abort();
+        }
+        this.loadingSlices.delete(key);
+      }
+    }
+
+    // Clean up track-specific buffers (BIGGEST memory saver)
+    this.audioBuffers.delete(trackId);
+    this.playedSlices.delete(trackId);
+
+    // Remove track encryption key
+    this.trackKeys.delete(trackId);
+
+    // Handle active track removal - switch to another track
+    let newActiveTrackId = this.activeTrackId;
+    if (this.activeTrackId === trackId) {
+      // Find another track to switch to
+      if (this.sessionInfo.tracks && this.sessionInfo.tracks.length > 1) {
+        const trackIndex = this.sessionInfo.tracks.findIndex(t => t.trackId === trackId);
+        const nextTrack = this.sessionInfo.tracks[trackIndex + 1] || this.sessionInfo.tracks[trackIndex - 1];
+        if (nextTrack && nextTrack.trackId !== trackId) {
+          newActiveTrackId = nextTrack.trackId;
+        }
+      }
+    }
+
+    // Call transport to remove track from server
+    const updatedSessionInfo = await this.retryManager.retry(async() => {
+      try {
+        return await this.transport.removeTrack(this.sessionInfo!.sessionId, trackIdOrIndex);
+      } catch(error) {
+        throw new NetworkError('Failed to remove track', error as Error);
+      }
+    });
+
+    // Update local session info
+    this.sessionInfo = updatedSessionInfo;
+
+    // Update active track if needed
+    if (this.activeTrackId === trackId) {
+      this.activeTrackId = newActiveTrackId;
+      if (this.sessionInfo.activeTrackId !== undefined && newActiveTrackId !== null) {
+        this.sessionInfo.activeTrackId = newActiveTrackId;
+      }
+    }
+
+    return updatedSessionInfo;
   }
 
   /**
@@ -425,6 +585,7 @@ export class SecureAudioClient<
 
     // Ensure track is initialized (key exchange done)
     if (!this.trackKeys.has(targetTrackId)) {
+      console.log(`⚠️ Track key not found for ${targetTrackId}, initializing...`);
       await this.initializeTrack(targetTrackId);
     }
 
@@ -432,6 +593,8 @@ export class SecureAudioClient<
     if (!trackKey) {
       throw new Error(`Track key not available for ${targetTrackId}`);
     }
+
+    console.log(`🔐 Loading slice ${sliceId} for track ${targetTrackId}`);
 
     // Get sequence from slice ID using track's slice IDs
     const sequence = trackInfo.sliceIds.indexOf(sliceId);
@@ -679,9 +842,8 @@ export class SecureAudioClient<
         } else if (typeof trackKey === 'string') {
           transferableKey = trackKey;
         } else if (trackKey instanceof CryptoKey) {
-          // CryptoKey cannot be transferred to workers easily
-          // Fall back to main thread for CryptoKey
-          throw new TypeError('CryptoKey not supported in workers, using main thread');
+          // Export CryptoKey to raw format for transfer to worker
+          transferableKey = await crypto.subtle.exportKey('raw', trackKey);
         } else {
           // Unknown key type, fall back to main thread
           throw new TypeError('Unknown key type, using main thread');
