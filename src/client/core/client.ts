@@ -175,8 +175,6 @@ export class SecureAudioClient<
     // Create key exchange request
     const keyExchangeRequest = await this.keyExchangeProcessor.createKeyExchangeRequest();
 
-    console.log(`🔑 Client: Performing initial key exchange for session ${sessionId}`);
-
     // Perform key exchange with retry
     const keyExchangeResponse = await this.retryManager.retry(async() => {
       try {
@@ -184,11 +182,6 @@ export class SecureAudioClient<
       } catch(error) {
         throw new NetworkError('Key exchange failed', error as Error);
       }
-    });
-
-    console.log(`📦 Client: Received key exchange response`, {
-      hasSessionInfo: !!keyExchangeResponse.sessionInfo,
-      trackCount: keyExchangeResponse.sessionInfo?.tracks?.length || 0
     });
 
     // Store session info
@@ -204,11 +197,6 @@ export class SecureAudioClient<
       this.activeTrackId = this.sessionInfo.tracks[0].trackId;
       this.trackKeys.set(this.activeTrackId, sessionKey);
       this.sessionInfo.activeTrackId = this.activeTrackId;
-
-      console.log(`✅ Client: First track key stored for ${this.activeTrackId}`, {
-        trackInfo: this.sessionInfo.tracks[0],
-        sliceCount: this.sessionInfo.tracks[0].sliceIds?.length || 0
-      });
     } else {
       // Single-track session (backward compatibility)
       // Exchange key immediately for the single track
@@ -224,8 +212,7 @@ export class SecureAudioClient<
     if (this.workerManager) {
       try {
         await this.workerManager.initialize();
-      } catch(error) {
-        console.warn('Failed to initialize Web Worker, falling back to main thread:', error);
+      } catch {
         this.workerManager = null;
       }
     }
@@ -252,18 +239,12 @@ export class SecureAudioClient<
    */
   private getCurrentTrackInfo(): TrackInfo | null {
     if (!this.sessionInfo) {
-      console.warn('⚠️ Client: getCurrentTrackInfo called but sessionInfo is null');
       return null;
     }
 
     // Multi-track session
     if (this.sessionInfo.tracks && this.sessionInfo.tracks.length > 0) {
       const track = this.sessionInfo.tracks.find(t => t.trackId === this.activeTrackId);
-      if (track) {
-        console.log(`📍 Client: getCurrentTrackInfo returning track ${track.trackId} with ${track.sliceIds?.length || 0} slices`);
-      } else {
-        console.warn(`⚠️ Client: getCurrentTrackInfo could not find activeTrackId=${this.activeTrackId}`);
-      }
       return track || null;
     }
 
@@ -287,10 +268,7 @@ export class SecureAudioClient<
    * Get track information by trackId or index
    */
   getTrackInfo(trackIdOrIndex: string | number): TrackInfo | null {
-    console.log(`🔍 Client: getTrackInfo called with ${trackIdOrIndex}`);
-
     if (!this.sessionInfo) {
-      console.warn('⚠️ Client: getTrackInfo called but sessionInfo is null');
       return null;
     }
 
@@ -308,12 +286,6 @@ export class SecureAudioClient<
       track = this.sessionInfo.tracks.find(t => t.trackId === trackIdOrIndex);
     } else {
       track = this.sessionInfo.tracks[trackIdOrIndex];
-    }
-
-    if (track) {
-      console.log(`✅ Client: getTrackInfo found track ${track.trackId} with ${track.sliceIds?.length || 0} slices`);
-    } else {
-      console.warn(`⚠️ Client: getTrackInfo could not find track for ${trackIdOrIndex}`);
     }
 
     return track || null;
@@ -335,11 +307,8 @@ export class SecureAudioClient<
 
     // Check if key already exists
     if (this.trackKeys.has(trackInfo.trackId)) {
-      console.log(`✅ Client: Track key already exists for ${trackInfo.trackId}`);
       return; // Already initialized
     }
-
-    console.log(`🔑 Client: Initializing track key for ${trackInfo.trackId}...`);
 
     // Perform key exchange for this track
     await this.keyExchangeProcessor.initialize();
@@ -350,16 +319,11 @@ export class SecureAudioClient<
         return await this.transport.performKeyExchange(
           this.sessionInfo!.sessionId,
           keyExchangeRequest,
-          trackInfo.trackId // Pass trackId for track-specific key exchange
+          trackInfo.trackId, // Pass trackId for track-specific key exchange
         );
       } catch(error) {
         throw new NetworkError(`Track key exchange failed for ${trackInfo.trackId}`, error as Error);
       }
-    });
-
-    console.log(`📦 Client: Received track key exchange response for ${trackInfo.trackId}`, {
-      hasSessionInfo: !!keyExchangeResponse.sessionInfo,
-      hasUpdatedTrack: !!keyExchangeResponse.sessionInfo?.tracks?.find(t => t.trackId === trackInfo.trackId)
     });
 
     // Store the track-specific key
@@ -374,18 +338,9 @@ export class SecureAudioClient<
         const trackIndex = this.sessionInfo.tracks.findIndex(t => t.trackId === trackInfo.trackId);
         if (trackIndex !== -1) {
           this.sessionInfo.tracks[trackIndex] = updatedTrack;
-          console.log(`✅ Client: Track info updated with ${updatedTrack.sliceIds.length} slices for ${trackInfo.trackId}`);
-        } else {
-          console.warn(`⚠️ Client: Could not find track index for ${trackInfo.trackId} in sessionInfo.tracks`);
         }
-      } else {
-        console.warn(`⚠️ Client: No updated track found in response for ${trackInfo.trackId}`);
       }
-    } else {
-      console.warn(`⚠️ Client: No sessionInfo.tracks in key exchange response`);
     }
-
-    console.log(`✅ Client: Track key initialized for ${trackInfo.trackId}, key type:`, trackKey instanceof CryptoKey ? 'CryptoKey' : typeof trackKey);
   }
 
   /**
@@ -393,8 +348,6 @@ export class SecureAudioClient<
    * Performs lazy key exchange if needed
    */
   async switchToTrack(trackIdOrIndex: string | number): Promise<TrackInfo> {
-    console.log(`🔄 Client: switchToTrack called with ${trackIdOrIndex}`);
-
     if (!this.sessionInfo) {
       throw new Error('Session not initialized');
     }
@@ -404,11 +357,6 @@ export class SecureAudioClient<
       throw new Error(`Track not found: ${trackIdOrIndex}`);
     }
 
-    console.log(`📌 Client: Track info BEFORE initialization:`, {
-      trackId: trackInfo.trackId,
-      sliceCount: trackInfo.sliceIds?.length || 0
-    });
-
     // Initialize track key if not already done (lazy loading)
     await this.initializeTrack(trackInfo.trackId);
 
@@ -417,11 +365,6 @@ export class SecureAudioClient<
     if (!updatedTrackInfo) {
       throw new Error(`Track not found after initialization: ${trackInfo.trackId}`);
     }
-
-    console.log(`📌 Client: Track info AFTER initialization:`, {
-      trackId: updatedTrackInfo.trackId,
-      sliceCount: updatedTrackInfo.sliceIds?.length || 0
-    });
 
     // Update active track
     this.activeTrackId = updatedTrackInfo.trackId;
@@ -438,8 +381,6 @@ export class SecureAudioClient<
     this.sessionInfo.isFloat32 = updatedTrackInfo.isFloat32;
     this.sessionInfo.sliceIds = updatedTrackInfo.sliceIds;
     this.sessionInfo.format = updatedTrackInfo.format;
-
-    console.log(`✅ Client: switchToTrack complete, backward compat sliceIds count: ${this.sessionInfo.sliceIds?.length || 0}`);
 
     return updatedTrackInfo;
   }
@@ -585,7 +526,6 @@ export class SecureAudioClient<
 
     // Ensure track is initialized (key exchange done)
     if (!this.trackKeys.has(targetTrackId)) {
-      console.log(`⚠️ Track key not found for ${targetTrackId}, initializing...`);
       await this.initializeTrack(targetTrackId);
     }
 
@@ -593,8 +533,6 @@ export class SecureAudioClient<
     if (!trackKey) {
       throw new Error(`Track key not available for ${targetTrackId}`);
     }
-
-    console.log(`🔐 Loading slice ${sliceId} for track ${targetTrackId}`);
 
     // Get sequence from slice ID using track's slice IDs
     const sequence = trackInfo.sliceIds.indexOf(sliceId);
@@ -755,10 +693,12 @@ export class SecureAudioClient<
       return;
 
     const targetTrackId = trackId || this.activeTrackId;
-    if (!targetTrackId) return;
+    if (!targetTrackId)
+      return;
 
     const trackInfo = this.getTrackInfo(targetTrackId);
-    if (!trackInfo) return;
+    if (!trackInfo)
+      return;
 
     // Limit concurrency for prefetch to reduce contention and maintain responsiveness
     const tasks: Array<() => Promise<void>> = [];
@@ -778,10 +718,8 @@ export class SecureAudioClient<
       tasks.push(async() => {
         try {
           await this.loadSlice(sliceId, undefined, targetTrackId);
-        } catch(error) {
-          if (!(error instanceof Error && error.message === 'Operation cancelled')) {
-            console.warn(`Failed to prefetch slice ${sliceId}:`, error);
-          }
+        } catch {
+          // Silently ignore prefetch errors
         }
       });
     }
@@ -810,7 +748,8 @@ export class SecureAudioClient<
    */
   getSliceData(sequence: number, trackId?: string): AudioSliceData | null {
     const targetTrackId = trackId || this.activeTrackId;
-    if (!targetTrackId) return null;
+    if (!targetTrackId)
+      return null;
 
     const trackBuffer = this.audioBuffers.get(targetTrackId);
     return trackBuffer?.get(sequence) || null;
@@ -850,9 +789,8 @@ export class SecureAudioClient<
         }
 
         return await this.workerManager.decryptSlice(encryptedSlice, transferableKey);
-      } catch(error) {
-        // Log warning and fall through to main thread decryption
-        console.warn('Worker decryption failed, falling back to main thread:', error);
+      } catch {
+        // Fall through to main thread decryption
       }
     }
 
@@ -885,13 +823,15 @@ export class SecureAudioClient<
    */
   cleanupBuffers(currentSlice: number, bufferSize: number = DEFAULT_BUFFER_SIZE, trackId?: string): void {
     const targetTrackId = trackId || this.activeTrackId;
-    if (!targetTrackId) return;
+    if (!targetTrackId)
+      return;
 
     const bufferStart = Math.max(0, currentSlice - bufferSize);
     const trackBuffer = this.audioBuffers.get(targetTrackId);
     const playedSet = this.playedSlices.get(targetTrackId);
 
-    if (!trackBuffer || !playedSet) return;
+    if (!trackBuffer || !playedSet)
+      return;
 
     for (const [sequence] of trackBuffer) {
       if (sequence < bufferStart && playedSet.has(sequence)) {
@@ -968,7 +908,8 @@ export class SecureAudioClient<
   // Mark a slice as played for cleanup purposes (track-aware)
   markSlicePlayed(sequence: number, trackId?: string): void {
     const targetTrackId = trackId || this.activeTrackId;
-    if (!targetTrackId) return;
+    if (!targetTrackId)
+      return;
 
     if (!this.playedSlices.has(targetTrackId)) {
       this.playedSlices.set(targetTrackId, new Set());
@@ -979,7 +920,8 @@ export class SecureAudioClient<
   // Check if a slice is available in buffer (track-aware)
   isSliceAvailable(sequence: number, trackId?: string): boolean {
     const targetTrackId = trackId || this.activeTrackId;
-    if (!targetTrackId) return false;
+    if (!targetTrackId)
+      return false;
 
     const trackBuffer = this.audioBuffers.get(targetTrackId);
     return trackBuffer?.has(sequence) || false;
@@ -988,7 +930,8 @@ export class SecureAudioClient<
   // Remove a specific slice from buffer (track-aware)
   removeSlice(sequence: number, trackId?: string): void {
     const targetTrackId = trackId || this.activeTrackId;
-    if (!targetTrackId) return;
+    if (!targetTrackId)
+      return;
 
     const trackBuffer = this.audioBuffers.get(targetTrackId);
     if (trackBuffer) {
@@ -1004,7 +947,8 @@ export class SecureAudioClient<
   // Get all buffered slice indices (track-aware)
   getBufferedSlices(trackId?: string): number[] {
     const targetTrackId = trackId || this.activeTrackId;
-    if (!targetTrackId) return [];
+    if (!targetTrackId)
+      return [];
 
     const trackBuffer = this.audioBuffers.get(targetTrackId);
     return trackBuffer ? Array.from(trackBuffer.keys()) : [];
@@ -1012,7 +956,8 @@ export class SecureAudioClient<
 
   // Get all tracks in the session
   getTracks(): TrackInfo[] {
-    if (!this.sessionInfo) return [];
+    if (!this.sessionInfo)
+      return [];
     return this.sessionInfo.tracks || [];
   }
 
