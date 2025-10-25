@@ -1,17 +1,12 @@
 {
   "name": "secstream",
   "type": "module",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "packageManager": "pnpm@10.19.0",
   "description": "Secure audio streaming library with client/server components",
   "author": "BackRunner",
   "license": "MIT",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
     "./server": {
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js",
@@ -28,8 +23,6 @@
     },
     "./package.json": "./package.json"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "files": [
     "dist"
   ],

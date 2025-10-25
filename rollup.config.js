@@ -3,9 +3,7 @@ import resolve from '@rollup/plugin-node-resolve';
 import typescript from '@rollup/plugin-typescript';
 import dts from 'rollup-plugin-dts';
 
-const external = ['fflate', 'nanoid'];
-
-function createConfig(input, output, format = 'es') {
+function createConfig(input, output, format = 'es', isClient = false) {
   return {
     input,
     output: {
@@ -13,10 +11,11 @@ function createConfig(input, output, format = 'es') {
       format,
       sourcemap: true,
     },
-    external,
     plugins: [
       resolve({
-        preferBuiltins: true,
+        // Client bundles should use browser globals (like crypto), not Node.js built-ins
+        preferBuiltins: !isClient,
+        browser: isClient,
       }),
       commonjs(),
       typescript({
@@ -35,7 +34,6 @@ function createDtsConfig(input, output) {
       file: output,
       format: 'es',
     },
-    external,
     plugins: [
       dts({
         tsconfig: './tsconfig.json',
@@ -45,18 +43,14 @@ function createDtsConfig(input, output) {
 }
 
 export default [
-  // Main library bundle
-  createConfig('src/index.ts', 'dist/index.js'),
-  createDtsConfig('src/index.ts', 'dist/index.d.ts'),
-
-  // Client bundle
-  createConfig('src/client/index.ts', 'dist/client/index.js'),
+  // Client bundle - uses browser globals
+  createConfig('src/client/index.ts', 'dist/client/index.js', 'es', true),
   createDtsConfig('src/client/index.ts', 'dist/client/index.d.ts'),
 
-  // Server bundle
-  createConfig('src/server/index.ts', 'dist/server/index.js'),
+  // Server bundle - can use Node.js built-ins
+  createConfig('src/server/index.ts', 'dist/server/index.js', 'es', false),
   createDtsConfig('src/server/index.ts', 'dist/server/index.d.ts'),
 
-  // Web Worker for client-side decryption (standalone bundle)
-  createConfig('src/client/workers/decryption-worker.ts', 'dist/client/decryption-worker.js'),
+  // Web Worker for client-side decryption - uses browser globals
+  createConfig('src/client/workers/decryption-worker.ts', 'dist/client/decryption-worker.js', 'es', true),
 ];
