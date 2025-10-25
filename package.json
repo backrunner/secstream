@@ -1,7 +1,7 @@
 {
   "name": "secstream",
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packageManager": "pnpm@10.19.0",
   "description": "Secure audio streaming library with client/server components",
   "author": "BackRunner",
