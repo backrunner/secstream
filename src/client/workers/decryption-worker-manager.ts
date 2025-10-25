@@ -1,15 +1,48 @@
 /**
  * Manager for Web Worker-based decryption
  * Distributes decryption tasks across multiple workers for parallel processing
+ *
+ * IMPORTANT: This manages browser Web Workers, not Cloudflare Workers
+ * - Requires browser environment with Web Worker support
+ * - Uses postMessage API for communication
+ * - Transfers ArrayBuffers for zero-copy performance
+ *
+ * Usage after bundling:
+ *
+ * @example
+ * ```typescript
+ * // 1. Import the library
+ * import { SecureAudioClient } from 'secstream/client';
+ *
+ * // 2. Create worker URL from bundled worker script
+ * // The worker is available at: secstream/client/worker
+ * const workerUrl = new URL('secstream/client/worker', import.meta.url).href;
+ * // Or if self-hosted: const workerUrl = '/path/to/decryption-worker.js';
+ *
+ * // 3. Initialize client with worker config
+ * const client = new SecureAudioClient(transport, {
+ *   workerConfig: {
+ *     enabled: true,
+ *     workerCount: 2,  // Use 2 workers for parallel decryption
+ *     maxQueueSize: 10
+ *   },
+ *   workerUrl: workerUrl
+ * });
+ * ```
+ *
+ * The worker script must be:
+ * - Served with correct MIME type (application/javascript)
+ * - Accessible from the same origin or CORS-enabled
+ * - A module worker (uses ES6 imports)
  */
 
 import type { EncryptedSlice } from '../../shared/types/interfaces.js';
 import type {
   DecryptionWorkerConfig,
+  WorkerErrorResponse,
   WorkerMessage,
   WorkerResponse,
   WorkerSuccessResponse,
-  WorkerErrorResponse,
 } from './decryption-worker-types.js';
 
 interface PendingTask {
@@ -50,11 +83,25 @@ export class DecryptionWorkerManager {
       return;
     }
 
+    // Validate worker URL before attempting to create workers
+    if (!this.workerUrl) {
+      throw new Error('[DecryptionWorkerManager] Worker URL is required');
+    }
+
     const workerCount = Math.max(1, Math.min(this.config.workerCount, navigator.hardwareConcurrency || 4));
     const initPromises: Array<Promise<void>> = [];
 
     for (let i = 0; i < workerCount; i++) {
-      const worker = new Worker(this.workerUrl, { type: 'module' });
+      let worker: Worker;
+
+      try {
+        worker = new Worker(this.workerUrl, { type: 'module' });
+      }
+      catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        throw new Error(`[DecryptionWorkerManager] Failed to create worker ${i}: ${errorMsg}. Ensure workerUrl is correct and accessible: ${this.workerUrl}`);
+      }
+
       this.workers.push(worker);
 
       // Set up message handler
@@ -63,20 +110,34 @@ export class DecryptionWorkerManager {
       };
 
       worker.onerror = (error) => {
-        console.error('Worker error:', error);
+        console.error('[DecryptionWorkerManager] Worker runtime error:', {
+          message: error.message || 'Unknown error',
+          filename: error.filename,
+          lineno: error.lineno,
+          colno: error.colno,
+          workerId: i,
+          workerUrl: this.workerUrl,
+        });
       };
 
       // Initialize worker and wait for ready signal
       const initPromise = new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
-          reject(new Error('Worker initialization timeout'));
+          reject(new Error(`Worker ${i} initialization timeout after 5000ms. Processors: ${this.compressionProcessorName}/${this.encryptionProcessorName}`));
         }, 5000);
 
-        const handler = (event: MessageEvent<WorkerResponse>) => {
+        const handler = (event: MessageEvent<WorkerResponse>): void => {
           if (event.data.type === 'ready') {
             clearTimeout(timeout);
             worker.removeEventListener('message', handler);
             resolve();
+          } else if (event.data.type === 'error' && event.data.taskId === 'init-error') {
+            // Handle initialization error
+            clearTimeout(timeout);
+            worker.removeEventListener('message', handler);
+            const errorDetails = event.data.errorDetails;
+            const errorMsg = `Worker ${i} initialization failed: ${event.data.error}${errorDetails ? ` (${errorDetails.processorName})` : ''}`;
+            reject(new Error(errorMsg));
           }
         };
 
@@ -204,8 +265,32 @@ export class DecryptionWorkerManager {
       const errorResponse = response as WorkerErrorResponse;
       const task = this.pendingTasks.get(errorResponse.taskId);
       if (task) {
-        console.error('Worker returned error for task', errorResponse.taskId, ':', errorResponse.error);
-        task.reject(new Error(errorResponse.error));
+        const errorDetails = errorResponse.errorDetails;
+
+        // Build detailed error message
+        let errorMessage = `Decryption worker error: ${errorResponse.error}`;
+
+        if (errorDetails) {
+          const details = [
+            `operation: ${errorDetails.operation}`,
+            errorDetails.sliceId ? `sliceId: ${errorDetails.sliceId}` : null,
+            errorDetails.sessionId ? `sessionId: ${errorDetails.sessionId}` : null,
+            errorDetails.processorName ? `processors: ${errorDetails.processorName}` : null,
+          ].filter(Boolean).join(', ');
+
+          errorMessage += ` (${details})`;
+
+          // Log full details to console for debugging
+          console.error('[DecryptionWorkerManager] Worker task failed:', {
+            taskId: errorResponse.taskId,
+            error: errorResponse.error,
+            ...errorDetails,
+          });
+        } else {
+          console.error('[DecryptionWorkerManager] Worker task failed:', errorResponse.taskId, ':', errorResponse.error);
+        }
+
+        task.reject(new Error(errorMessage));
         this.pendingTasks.delete(errorResponse.taskId);
       }
     }

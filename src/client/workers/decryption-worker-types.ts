@@ -57,6 +57,13 @@ export interface WorkerErrorResponse {
   type: 'error';
   taskId: string;
   error: string;
+  errorDetails?: {
+    operation: 'init' | 'decrypt' | 'terminate' | 'unknown';
+    processorName?: string;
+    sliceId?: string;
+    sessionId?: string;
+    stack?: string;
+  };
 }
 
 /**
