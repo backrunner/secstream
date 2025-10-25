@@ -1,10 +1,13 @@
 import type { CompressionOptions, CompressionProcessor } from '../../types/processors.js';
-import { deflate, inflate } from 'fflate';
+import { deflateSync, inflateSync } from 'fflate';
 
 /**
  * DEFLATE-based compression processor using fflate library
  * Provides efficient DEFLATE compression/decompression for audio data transmission
  * Optimal for real-time audio streaming with configurable compression levels
+ *
+ * Uses synchronous versions (deflateSync/inflateSync) to avoid Worker dependencies
+ * which cause issues in server-side environments like Node.js and Cloudflare Workers
  */
 export class DeflateCompressionProcessor implements CompressionProcessor {
   private readonly defaultLevel: number;
@@ -17,32 +20,28 @@ export class DeflateCompressionProcessor implements CompressionProcessor {
   }
 
   async compress(data: ArrayBuffer, options?: CompressionOptions): Promise<ArrayBuffer> {
-    return new Promise((resolve, reject) => {
+    try {
       const uint8Data = new Uint8Array(data);
       const level = this.validateCompressionLevel(options?.level ?? this.defaultLevel);
 
-      deflate(uint8Data, { level }, (err: Error | null, compressed: Uint8Array) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(compressed.buffer as ArrayBuffer);
-        }
-      });
-    });
+      // Use synchronous version to avoid Worker dependency
+      const compressed = deflateSync(uint8Data, { level });
+      return compressed.buffer as ArrayBuffer;
+    } catch (err) {
+      throw new Error(`Compression failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async decompress(compressedData: ArrayBuffer): Promise<ArrayBuffer> {
-    return new Promise((resolve, reject) => {
+    try {
       const uint8Data = new Uint8Array(compressedData);
 
-      inflate(uint8Data, (err: Error | null, decompressed: Uint8Array) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(decompressed.buffer as ArrayBuffer);
-        }
-      });
-    });
+      // Use synchronous version to avoid Worker dependency
+      const decompressed = inflateSync(uint8Data);
+      return decompressed.buffer as ArrayBuffer;
+    } catch (err) {
+      throw new Error(`Decompression failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   getName(): string {
