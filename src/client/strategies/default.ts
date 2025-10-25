@@ -288,7 +288,8 @@ export class LinearPrefetchStrategy implements PrefetchStrategy {
       adjustedPrefetch = Math.min(this.maxPrefetchAhead, adjustedPrefetch + 2);
     }
 
-    return adjustedPrefetch;
+    // Clamp to min/max bounds
+    return Math.max(this.minPrefetchAhead, Math.min(this.maxPrefetchAhead, adjustedPrefetch));
   }
 
   /**
