@@ -20,12 +20,20 @@ export {
   TimestampSliceIdGenerator,
   UuidSliceIdGenerator,
 } from '../shared/slice-id/generators.js';
+// Audio decode cache
+export { AudioDecodeCache } from '../shared/types/cache.js';
+
+export type { CachedAudioSource, CacheStats } from '../shared/types/cache.js';
 // Re-export shared types that server developers need
 export type { SessionInfo, TrackInfo } from '../shared/types/interfaces.js';
 
 export type { CompressionLevel } from '../shared/types/interfaces.js';
-export type { SliceIdGenerator } from '../shared/types/interfaces.js';
 
+// ============================================================================
+// Shared functionality - Processors, Utilities, Types
+// ============================================================================
+
+export type { SliceIdGenerator } from '../shared/types/interfaces.js';
 // Shared configuration and types
 export type {
   AudioConfig,
@@ -33,20 +41,17 @@ export type {
   DEFAULT_CONFIG,
   EncryptedSlice,
 } from '../shared/types/interfaces.js';
-
-// ============================================================================
-// Shared functionality - Processors, Utilities, Types
-// ============================================================================
-
 export type {
   CompressionOptions,
   CompressionProcessor,
 } from '../shared/types/processors.js';
+
 export type {
   CryptoMetadata,
   EncryptionOptions,
   EncryptionProcessor,
 } from '../shared/types/processors.js';
+
 export type {
   KeyExchangeProcessor,
   ProcessingConfig,
@@ -62,21 +67,7 @@ export {
   extractAudioData,
   parseAudioMetadata,
 } from './audio/format-parser.js';
-
 export type { AudioMetadata } from './audio/format-parser.js';
-
-// Audio decoder interface (for FLAC/OGG/AAC support on Safari/Firefox)
-export type { AudioDecoder, PCMAudioData } from './audio/types.js';
-export { WASMAudioDecoder } from './audio/wasm-audio-decoder.js';
-
-// Browser detection utilities
-export {
-  isChromiumBrowser,
-  parseBrowserInfo,
-  requiresStrictAudioHandling,
-} from './utils/browser-detection.js';
-
-export type { BrowserInfo } from './utils/browser-detection.js';
 
 // MP3 frame parsing utilities (for Safari/Firefox compatibility)
 export {
@@ -88,12 +79,26 @@ export {
 
 export type { MP3FrameInfo } from './audio/mp3-frame-parser.js';
 
+// Audio decoder interface (for FLAC/OGG/AAC support on Safari/Firefox)
+export type { AudioDecoder, PCMAudioData } from './audio/types.js';
+export { WASMAudioDecoder } from './audio/wasm-audio-decoder.js';
+export { InMemoryAudioCache } from './cache/in-memory-cache.js';
+
 // Server-side exports
 export { SecureAudioServer } from './core/server.js';
 
 export { SessionManager } from './core/session-manager.js';
+
 export type { SessionManagerConfig } from './core/session-manager.js';
 
 export { AudioProcessor } from './processing/audio-processor.js';
-
 export type { AudioProcessorConfig, AudioSource } from './processing/audio-processor.js';
+
+// Browser detection utilities
+export {
+  isChromiumBrowser,
+  parseBrowserInfo,
+  requiresStrictAudioHandling,
+} from './utils/browser-detection.js';
+
+export type { BrowserInfo } from './utils/browser-detection.js';

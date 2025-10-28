@@ -1,3 +1,4 @@
+import type { AudioDecodeCache } from '../../shared/types/cache.js';
 import type { AudioConfig, EncryptedSlice, SessionInfo, SliceIdGenerator } from '../../shared/types/interfaces.js';
 import type {
   CompressionOptions,
@@ -52,6 +53,12 @@ export interface AudioProcessorConfig<
   serverCacheSize?: number;
   /** Server-side encrypted slice TTL in ms. Default: 300_000 (5 minutes) */
   serverCacheTtlMs?: number;
+  /**
+   * Custom cache for decoded audio data
+   * Caches AudioSource objects to avoid re-decoding the same audio file
+   * Optional - if not provided, no decode caching is performed
+   */
+  audioDecodeCache?: AudioDecodeCache;
 }
 
 /**
@@ -73,6 +80,7 @@ export class AudioProcessor<
   private readonly encryptionProcessor: TEncryptionProcessor;
   private readonly sliceIdGenerator: SliceIdGenerator;
   private readonly audioDecoder?: AudioDecoder;
+  private readonly audioDecodeCache?: AudioDecodeCache;
 
   constructor(config: AudioProcessorConfig<TCompressionProcessor, TEncryptionProcessor> = {}) {
     this.config = {
@@ -99,6 +107,9 @@ export class AudioProcessor<
 
     // Store audio decoder if provided
     this.audioDecoder = config.audioDecoder;
+
+    // Store audio decode cache if provided
+    this.audioDecodeCache = config.audioDecodeCache;
   }
 
   async processAudio(
@@ -379,6 +390,25 @@ export class AudioProcessor<
       throw new TypeError('Unsupported audio input type');
     }
 
+    // Check cache if available
+    if (this.audioDecodeCache) {
+      const cacheKey = await this.generateCacheKey(arrayBuffer);
+      const cached = await this.audioDecodeCache.get(cacheKey);
+
+      if (cached) {
+        // Return cached AudioSource
+        return {
+          data: cached.data,
+          sampleRate: cached.sampleRate,
+          channels: cached.channels,
+          length: cached.length,
+          format: cached.format,
+          metadata: cached.metadata,
+          mp3FrameBoundaries: cached.mp3FrameBoundaries,
+        };
+      }
+    }
+
     // Parse audio metadata using the new format parser
     const metadata = parseAudioMetadata(arrayBuffer);
     // Extract audio data (keeps MP3 compressed, extracts PCM for WAV)
@@ -391,7 +421,7 @@ export class AudioProcessor<
       mp3FrameBoundaries = buildMP3FrameMap(audioData);
     }
 
-    return {
+    const audioSource: AudioSource = {
       data: audioData,
       sampleRate: metadata.sampleRate,
       channels: metadata.channels,
@@ -400,6 +430,23 @@ export class AudioProcessor<
       metadata,
       mp3FrameBoundaries,
     };
+
+    // Store in cache if available
+    if (this.audioDecodeCache) {
+      const cacheKey = await this.generateCacheKey(arrayBuffer);
+      await this.audioDecodeCache.set(cacheKey, {
+        data: audioSource.data,
+        sampleRate: audioSource.sampleRate,
+        channels: audioSource.channels,
+        length: audioSource.length,
+        format: audioSource.format,
+        metadata: audioSource.metadata,
+        mp3FrameBoundaries: audioSource.mp3FrameBoundaries,
+        cachedAt: Date.now(),
+      });
+    }
+
+    return audioSource;
   }
 
   private async extractAudioSlice(
@@ -525,5 +572,42 @@ export class AudioProcessor<
       state = (a * state + c) % m;
       return state / m;
     };
+  }
+
+  /**
+   * Generate a cache key from audio data using a fast hash
+   * Uses a simple hash of file size, first/last bytes, and sample from middle
+   * This provides good uniqueness while being fast to compute
+   */
+  private async generateCacheKey(arrayBuffer: ArrayBuffer): Promise<string> {
+    const view = new Uint8Array(arrayBuffer);
+    const size = view.byteLength;
+
+    // Create a hash from file characteristics
+    let hash = size;
+
+    // Sample first bytes
+    const sampleSize = Math.min(1024, size);
+    for (let i = 0; i < sampleSize; i++) {
+      hash = ((hash << 5) - hash) + view[i];
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+
+    // Sample last bytes
+    const lastStart = Math.max(0, size - sampleSize);
+    for (let i = lastStart; i < size; i++) {
+      hash = ((hash << 5) - hash) + view[i];
+      hash = hash & hash;
+    }
+
+    // Sample middle bytes
+    const midStart = Math.floor(size / 2) - Math.floor(sampleSize / 2);
+    for (let i = midStart; i < midStart + sampleSize && i < size; i++) {
+      hash = ((hash << 5) - hash) + view[i];
+      hash = hash & hash;
+    }
+
+    // Convert to hex string
+    return `audio_${size}_${(hash >>> 0).toString(36)}`;
   }
 }
