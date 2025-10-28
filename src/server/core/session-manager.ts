@@ -22,7 +22,7 @@ interface TrackData {
   keyExchangeProcessor?: KeyExchangeProcessor;
   keyExchangeComplete?: boolean;
   audioData?: ArrayBuffer;
-  getSlice?: (sliceId: string) => Promise<EncryptedSlice | null>;
+  getSlice?: (sliceId: string, userAgent?: string) => Promise<EncryptedSlice | null>;
   metadata?: { title?: string; artist?: string; album?: string };
 }
 
@@ -38,7 +38,7 @@ interface AudioSession {
   processor?: AudioProcessor;
   sessionInfo?: SessionInfo;
   sessionKey?: unknown;
-  getSlice?: (sliceId: string) => Promise<EncryptedSlice | null>;
+  getSlice?: (sliceId: string, userAgent?: string) => Promise<EncryptedSlice | null>;
 
   createdAt: Date;
   lastAccessed: Date;
@@ -292,8 +292,9 @@ export class SessionManager {
    * @param sessionId - Session identifier
    * @param sliceId - Slice identifier
    * @param trackId - Optional track ID for multi-track sessions
+   * @param userAgent - Optional User-Agent header for browser-aware processing
    */
-  async getSlice(sessionId: string, sliceId: string, trackId?: string): Promise<EncryptedSlice | null> {
+  async getSlice(sessionId: string, sliceId: string, trackId?: string, userAgent?: string): Promise<EncryptedSlice | null> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return null;
@@ -322,7 +323,7 @@ export class SessionManager {
         return null;
       }
 
-      const slice = await track.getSlice(sliceId);
+      const slice = await track.getSlice(sliceId, userAgent);
 
       // Add trackId to the slice for client identification
       if (slice) {
@@ -342,7 +343,7 @@ export class SessionManager {
       return null;
     }
 
-    return await session.getSlice(sliceId);
+    return await session.getSlice(sliceId, userAgent);
   }
 
   /**

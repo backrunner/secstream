@@ -9,7 +9,8 @@ A secure audio streaming library that prevents client-side audio piracy through 
 ## ✨ Features
 
 - 🔐 **End-to-End Encryption**: ECDH key exchange with AES-GCM encryption by default
-- 🎵 **Multi-Format Audio**: WAV, MP3, FLAC, and OGG support
+- 🎵 **Multi-Format Audio**: WAV, MP3, FLAC, and OGG support with browser-aware processing
+- 🌐 **Universal Browser Support**: Automatic optimization for Chrome, Safari, Firefox, and Edge
 - 🎵 **Secure Audio Slicing**: Encrypted chunks prevent piracy
 - 🛡️ **Memory Protection**: Buffer disposal prevents audio extraction
 - 🌐 **Framework Agnostic**: Works with Express, Hono, Cloudflare Workers
@@ -101,15 +102,18 @@ import type { ClientConfig, PlayerConfig } from 'secstream/client'
 import Worker from 'secstream/client/worker'
 ```
 
-### Bundle Sizes (v0.1.6)
+### Bundle Sizes (v0.1.7)
 
 | Import Path | Bundle Size | Minified | Gzipped | Contains |
 |------------|-------------|----------|---------|----------|
-| `secstream/client` | 152.55 KB | 55.25 KB | **15.44 KB** | Client code + shared types |
-| `secstream/server` | 85.4 KB | 28.93 KB | **10.26 KB** | Server code + shared types |
+| `secstream/client` | 152.16 KB | 55.17 KB | **15.4 KB** | Client code + shared types |
+| `secstream/server` | 353.02 KB | 161.69 KB | **110.43 KB** | Server code + shared types + WASM decoders |
 | `secstream/client/worker` | 38.54 KB | 13.33 KB | **5.72 KB** | Web Worker for decryption |
 
-**Note**: Gzipped sizes represent actual transfer sizes over the network when served with compression (recommended).
+**Note**:
+- Server bundle includes FLAC (~67 KB) and Ogg Vorbis (~80 KB) WASM decoders for Safari/Firefox compatibility
+- Gzipped sizes represent actual transfer sizes over the network when served with compression (recommended)
+- WASM decoders are highly optimized and compatible with Cloudflare Workers
 
 ### Why Separate Imports?
 
@@ -249,7 +253,7 @@ const sessionManager = new SessionManager({
 **Methods:**
 - `createSession(audioData: ArrayBuffer | ReadableStream): Promise<string>` - Create new session
 - `handleKeyExchange(sessionId: string, request: KeyExchangeRequest): Promise<KeyExchangeResponse>` - Handle key exchange
-- `getSlice(sessionId: string, sliceId: string): Promise<EncryptedSlice | null>` - Get encrypted slice
+- `getSlice(sessionId: string, sliceId: string, trackId?: string, userAgent?: string): Promise<EncryptedSlice | null>` - Get encrypted slice (pass User-Agent for browser optimization)
 - `destroySession(sessionId: string): void` - Clean up session
 - `getStats(): { activeSessions: number }` - Get statistics
 
@@ -257,7 +261,101 @@ const sessionManager = new SessionManager({
 - **WAV**: Full PCM parsing with accurate metadata extraction
 - **MP3**: ID3v2 tag detection and MPEG frame parsing
 - **FLAC**: Metadata block parsing and stream info extraction
-- **OGG**: Format detection and basic metadata support
+- **OGG**: Vorbis codec with full metadata support
+
+### Browser-Aware Audio Processing
+
+SecStream automatically detects the client's browser and optimizes audio processing for maximum compatibility:
+
+#### Automatic Browser Detection
+
+The server detects the browser via User-Agent header and applies appropriate processing:
+
+```typescript
+import { SessionManager, WASMAudioDecoder } from 'secstream/server'
+
+const sessionManager = new SessionManager({
+  sliceDurationMs: 5000,
+  // Optional: Add WASM decoder for FLAC/OGG on Safari/Firefox
+  audioDecoder: new WASMAudioDecoder(),
+})
+
+// In your HTTP handler - pass User-Agent header
+app.get('/api/sessions/:sessionId/slices/:sliceId', async (req, res) => {
+  const userAgent = req.headers['user-agent'] || ''
+
+  const slice = await sessionManager.getSlice(
+    req.params.sessionId,
+    req.params.sliceId,
+    undefined, // trackId (for multi-track sessions)
+    userAgent  // Pass User-Agent for browser detection
+  )
+
+  res.send(slice)
+})
+```
+
+#### Format Compatibility Matrix
+
+| Format | Chromium (Chrome/Edge) | Safari | Firefox | Decoder Size |
+|--------|------------------------|--------|---------|--------------|
+| **MP3** | ✅ Fast byte slicing | ✅ Frame-aware slicing | ✅ Frame-aware slicing | 0 KB (built-in) |
+| **WAV** | ✅ PCM slicing | ✅ PCM slicing | ✅ PCM slicing | 0 KB (built-in) |
+| **FLAC** | ✅ Fast byte slicing | ✅ WASM → PCM | ✅ WASM → PCM | ~67 KB |
+| **OGG** | ✅ Fast byte slicing | ✅ WASM → PCM | ✅ WASM → PCM | ~80 KB |
+
+**How It Works:**
+
+**Chromium Browsers (Chrome, Edge, Opera, Brave):**
+- More forgiving with compressed audio slicing
+- Uses fast byte-position estimation for all formats
+- Optimal performance with minimal processing
+
+**Safari/Firefox:**
+- Require strict format handling for reliable decoding
+- **MP3**: Automatically slices at exact frame boundaries (no extra setup needed)
+- **FLAC/OGG**: Uses WASM decoder to convert to PCM before slicing (requires `WASMAudioDecoder`)
+- Ensures maximum compatibility across all Apple devices
+
+**AAC Format:**
+- Works on all browsers using byte estimation
+- May have compatibility issues on Safari/Firefox
+- AAC WASM decoders are too large (1MB+) for Cloudflare Workers deployment
+- Recommendation: Use MP3 or FLAC for better Safari/Firefox compatibility
+
+#### WASM Decoder Setup (Optional)
+
+For **FLAC** and **OGG Vorbis** support on Safari/Firefox:
+
+```typescript
+import { SessionManager, WASMAudioDecoder } from 'secstream/server'
+
+const sessionManager = new SessionManager({
+  sliceDurationMs: 5000,
+  compressionLevel: 6,
+  // Enable FLAC/OGG support for Safari/Firefox
+  audioDecoder: new WASMAudioDecoder(),
+  // ~150 KB total decoder size (67 KB FLAC + 80 KB OGG)
+  // Compatible with Cloudflare Workers!
+})
+```
+
+**Without WASMAudioDecoder:**
+- FLAC/OGG will throw an error on Safari/Firefox
+- Chromium browsers continue to work fine
+- MP3 and WAV work on all browsers
+
+**With WASMAudioDecoder:**
+- FLAC/OGG work perfectly on all browsers
+- Small bundle size increase (~150 KB)
+- Cloudflare Workers compatible
+- No external dependencies
+
+**Performance Characteristics:**
+- **MP3 frame slicing**: No performance impact (metadata parsing only)
+- **FLAC/OGG decoding**: ~10-50ms per slice on first access
+- **Caching**: Decoded slices are cached on server for subsequent requests
+- **Memory**: Minimal overhead, decoded data cleaned up after slicing
 
 #### Slice ID Generators
 

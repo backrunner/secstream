@@ -148,13 +148,12 @@ function parseMP3(buffer: ArrayBuffer): AudioMetadata {
 
   // MPEG version
   const version = (header >> 19) & 0x3;
-  const layer = (header >> 17) & 0x3;
 
   // Sample rate table for MPEG 1, 2, 2.5
   const sampleRates = [
     [44100, 48000, 32000], // MPEG 1
     [22050, 24000, 16000], // MPEG 2
-    [11025, 12000, 8000],  // MPEG 2.5
+    [11025, 12000, 8000], // MPEG 2.5
   ];
   const versionIndex = version === 3 ? 0 : (version === 2 ? 1 : 2);
   const sampleRateIndex = (header >> 10) & 0x3;
@@ -304,13 +303,15 @@ export function estimateSampleCount(metadata: AudioMetadata): number {
     case 'wav':
       return metadata.dataLength / (metadata.channels * ((metadata.bitDepth || 16) / 8));
     case 'mp3':
-      // Fallback if totalSamples not calculated
+    // Fallback if totalSamples not calculated
+    {
       if (metadata.duration) {
         return Math.floor(metadata.duration * metadata.sampleRate);
       }
       // Very rough estimate as last resort
       const estimatedFrames = Math.floor(metadata.dataLength / 417);
       return estimatedFrames * 1152;
+    }
     case 'flac':
       // FLAC frames are variable, rough estimate
       return Math.floor(metadata.dataLength / metadata.channels / ((metadata.bitDepth || 16) / 8));

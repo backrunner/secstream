@@ -64,6 +64,30 @@ export {
 } from './audio/format-parser.js';
 
 export type { AudioMetadata } from './audio/format-parser.js';
+
+// Audio decoder interface (for FLAC/OGG/AAC support on Safari/Firefox)
+export type { AudioDecoder, PCMAudioData } from './audio/types.js';
+export { WASMAudioDecoder } from './audio/wasm-audio-decoder.js';
+
+// Browser detection utilities
+export {
+  isChromiumBrowser,
+  parseBrowserInfo,
+  requiresStrictAudioHandling,
+} from './utils/browser-detection.js';
+
+export type { BrowserInfo } from './utils/browser-detection.js';
+
+// MP3 frame parsing utilities (for Safari/Firefox compatibility)
+export {
+  buildMP3FrameMap,
+  findFrameBoundary,
+  parseMP3FrameHeader,
+  sliceMP3AtFrameBoundaries,
+} from './audio/mp3-frame-parser.js';
+
+export type { MP3FrameInfo } from './audio/mp3-frame-parser.js';
+
 // Server-side exports
 export { SecureAudioServer } from './core/server.js';
 

@@ -7,10 +7,13 @@ import type {
   ProcessingConfig,
 } from '../../shared/types/processors.js';
 import type { AudioMetadata } from '../audio/format-parser.js';
+import type { AudioDecoder } from '../audio/types.js';
 import { DeflateCompressionProcessor } from '../../shared/compression/processors/deflate-processor.js';
 import { AesGcmEncryptionProcessor } from '../../shared/crypto/processors/aes-gcm-processor.js';
 import { NanoidSliceIdGenerator } from '../../shared/slice-id/generators.js';
 import { estimateSampleCount, extractAudioData, parseAudioMetadata } from '../audio/format-parser.js';
+import { buildMP3FrameMap, sliceMP3AtFrameBoundaries } from '../audio/mp3-frame-parser.js';
+import { requiresStrictAudioHandling } from '../utils/browser-detection.js';
 
 export interface AudioSource {
   data: ArrayBuffer;
@@ -19,6 +22,7 @@ export interface AudioSource {
   length: number; // number of samples
   format: string;
   metadata: AudioMetadata;
+  mp3FrameBoundaries?: number[]; // Cached MP3 frame boundaries for frame-aligned slicing
 }
 
 export interface AudioProcessorConfig<
@@ -27,6 +31,11 @@ export interface AudioProcessorConfig<
 > extends Partial<AudioConfig> {
   processingConfig?: ProcessingConfig<TCompressionProcessor, TEncryptionProcessor>;
   sliceIdGenerator?: SliceIdGenerator; // Allow custom slice ID generation
+  /**
+   * Audio decoder for FLAC/OGG/AAC formats (required for Safari/Firefox support)
+   * Optional - if not provided, these formats will only work on Chromium browsers
+   */
+  audioDecoder?: AudioDecoder;
   /**
    * Prewarm first N slices right after key exchange to reduce initial latency.
    * 0 or undefined disables prewarm. Default: 0
@@ -63,6 +72,7 @@ export class AudioProcessor<
   private readonly compressionProcessor: TCompressionProcessor;
   private readonly encryptionProcessor: TEncryptionProcessor;
   private readonly sliceIdGenerator: SliceIdGenerator;
+  private readonly audioDecoder?: AudioDecoder;
 
   constructor(config: AudioProcessorConfig<TCompressionProcessor, TEncryptionProcessor> = {}) {
     this.config = {
@@ -86,6 +96,9 @@ export class AudioProcessor<
 
     // Initialize slice ID generator with default or user-provided one
     this.sliceIdGenerator = config.sliceIdGenerator || new NanoidSliceIdGenerator();
+
+    // Store audio decoder if provided
+    this.audioDecoder = config.audioDecoder;
   }
 
   async processAudio(
@@ -218,7 +231,7 @@ export class AudioProcessor<
     // Return getSlice function that prepares slices on-demand
     return {
       sessionInfo,
-      getSlice: async(sliceId: string) => {
+      getSlice: async(sliceId: string, userAgent?: string) => {
         // Check cache first
         if (sliceCache.has(sliceId)) {
           return sliceCache.get(sliceId)!;
@@ -236,8 +249,8 @@ export class AudioProcessor<
           return null;
         }
 
-        // Prepare slice on-demand for fast response
-        const promise = this.prepareSlice(audioSource, sliceIndex, sessionKey, sessionId, sliceOffsets, sliceId)
+        // Prepare slice on-demand for fast response (browser-aware)
+        const promise = this.prepareSlice(audioSource, sliceIndex, sessionKey, sessionId, sliceOffsets, sliceId, userAgent)
           .then((encryptedSlice) => {
             this.manageSliceCache(sliceCache, sliceId, encryptedSlice);
             return encryptedSlice;
@@ -259,12 +272,13 @@ export class AudioProcessor<
     sessionId: string,
     sliceOffsets: number[],
     sliceId: string, // Use the provided sliceId instead of generating it
+    userAgent?: string,
   ): Promise<EncryptedSlice> {
     const startSample = sliceOffsets[sliceIndex];
     const endSample = sliceOffsets[sliceIndex + 1];
 
-    // Extract slice data efficiently
-    const sliceData = this.extractAudioSlice(audioSource, startSample, endSample);
+    // Extract slice data efficiently (browser-aware)
+    const sliceData = await this.extractAudioSlice(audioSource, startSample, endSample, userAgent);
 
     // Compress the slice using configurable processor (adaptive for compressed formats)
     const compressionOptions: CompressionOptions = { level: this.getCompressionLevelForFormat(audioSource.format) };
@@ -371,6 +385,12 @@ export class AudioProcessor<
     const audioData = extractAudioData(arrayBuffer, metadata);
     const sampleCount = estimateSampleCount(metadata);
 
+    // Build MP3 frame boundaries for frame-aligned slicing
+    let mp3FrameBoundaries: number[] | undefined;
+    if (metadata.format === 'mp3') {
+      mp3FrameBoundaries = buildMP3FrameMap(audioData);
+    }
+
     return {
       data: audioData,
       sampleRate: metadata.sampleRate,
@@ -378,10 +398,16 @@ export class AudioProcessor<
       length: sampleCount,
       format: metadata.format,
       metadata,
+      mp3FrameBoundaries,
     };
   }
 
-  private extractAudioSlice(audioSource: AudioSource, startSample: number, endSample: number): ArrayBuffer {
+  private async extractAudioSlice(
+    audioSource: AudioSource,
+    startSample: number,
+    endSample: number,
+    userAgent?: string,
+  ): Promise<ArrayBuffer> {
     // For raw PCM (WAV only), we can slice directly by samples
     if (audioSource.format === 'wav') {
       const bytesPerSample = (audioSource.metadata.bitDepth || 16) / 8;
@@ -392,8 +418,66 @@ export class AudioProcessor<
       return audioSource.data.slice(startByte, endByte);
     }
 
-    // For compressed formats (MP3, FLAC, OGG), estimate byte positions
-    // Client will decode these compressed slices using Web Audio API
+    // Determine if browser requires strict audio handling
+    const needsStrictHandling = userAgent ? requiresStrictAudioHandling(userAgent) : false;
+
+    // For Chromium browsers: use frame-aligned slicing for MP3, byte estimation for others
+    if (!needsStrictHandling) {
+      // MP3: Slice at frame boundaries to avoid cutting inside frames
+      if (audioSource.format === 'mp3') {
+        if (!audioSource.mp3FrameBoundaries) {
+          throw new Error('MP3 frame boundaries not built - call decodeAudio first');
+        }
+
+        const totalBytes = audioSource.data.byteLength;
+        const totalSamples = audioSource.length;
+        const startByte = Math.floor((startSample / totalSamples) * totalBytes);
+        const endByte = Math.floor((endSample / totalSamples) * totalBytes);
+
+        return sliceMP3AtFrameBoundaries(
+          audioSource.data,
+          audioSource.mp3FrameBoundaries,
+          startByte,
+          endByte,
+        );
+      }
+
+      // Other formats: Use fast byte-position estimation
+      const totalBytes = audioSource.data.byteLength;
+      const totalSamples = audioSource.length;
+      const startByte = Math.floor((startSample / totalSamples) * totalBytes);
+      const endByte = Math.floor((endSample / totalSamples) * totalBytes);
+
+      return audioSource.data.slice(startByte, endByte);
+    }
+
+    // For non-Chromium browsers (Safari, Firefox): use strict format handling
+    // For Safari/Firefox: Decode MP3/FLAC/OGG to PCM
+    if (audioSource.format === 'mp3' || audioSource.format === 'flac' || audioSource.format === 'ogg') {
+      if (!this.audioDecoder) {
+        throw new Error(
+          'Safari/Firefox detected but no audioDecoder configured. '
+          + `${audioSource.format.toUpperCase()} format requires PCM decoding for non-Chromium browsers. `
+          + 'Please provide an audioDecoder in AudioProcessorConfig (e.g., WASMAudioDecoder). '
+          + 'See documentation for recommended decoder libraries.',
+        );
+      }
+
+      // Decode the entire audio to PCM
+      const pcmData = await this.audioDecoder.decode(audioSource.data, audioSource.metadata);
+
+      // Slice the decoded PCM data
+      const bytesPerSample = pcmData.bitDepth / 8;
+      const frameSize = pcmData.channels * bytesPerSample;
+      const startByte = startSample * frameSize;
+      const endByte = endSample * frameSize;
+
+      return pcmData.pcmData.slice(startByte, endByte);
+    }
+
+    // For AAC: Fall back to byte estimation (no decoder available for Cloudflare Workers)
+    // Let the client's Web Audio API attempt to decode it
+    // Note: This may not work perfectly on Safari/Firefox, but it's the best we can do without a large decoder
     const totalBytes = audioSource.data.byteLength;
     const totalSamples = audioSource.length;
     const startByte = Math.floor((startSample / totalSamples) * totalBytes);
