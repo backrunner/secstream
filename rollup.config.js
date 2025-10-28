@@ -2,6 +2,7 @@ import commonjs from '@rollup/plugin-commonjs';
 import resolve from '@rollup/plugin-node-resolve';
 import typescript from '@rollup/plugin-typescript';
 import dts from 'rollup-plugin-dts';
+import filesize from 'rollup-plugin-filesize';
 
 function createConfig(input, output, format = 'es', isClient = false) {
   return {
@@ -22,6 +23,10 @@ function createConfig(input, output, format = 'es', isClient = false) {
         tsconfig: './tsconfig.json',
         declaration: false,
         declarationMap: false,
+      }),
+      filesize({
+        showMinifiedSize: true,
+        showGzippedSize: true,
       }),
     ],
   };

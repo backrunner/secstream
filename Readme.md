@@ -87,31 +87,29 @@ SecStream is designed with **complete separation** between client and server cod
 **For Server-Side (Node.js, Cloudflare Workers, etc.):**
 ```typescript
 // ✅ Correct - Only imports server code
-import { SessionManager, AudioProcessor } from 'secstream/server'
+import { SessionManager, SecureAudioAPI } from 'secstream/server'
 import type { SessionManagerConfig, AudioProcessorConfig } from 'secstream/server'
 ```
 
 **For Client-Side (Browser, React, Vue, etc.):**
 ```typescript
 // ✅ Correct - Only imports client code
-import { SecureAudioClient, SecureAudioPlayer } from 'secstream/client'
+import { SecStreamClient } from 'secstream/client'
 import type { ClientConfig, PlayerConfig } from 'secstream/client'
+
+// ✅ Web Worker for client-side decryption (optional)
+import Worker from 'secstream/client/worker'
 ```
 
-**For Shared Types and Utilities:**
-```typescript
-// ✅ For isomorphic/shared code - imports everything
-import type { AudioConfig, CompressionLevel, EncryptionAlgorithm } from 'secstream'
-import { NanoidSliceIdGenerator, AesGcmEncryptionProcessor } from 'secstream'
-```
+### Bundle Sizes (v0.1.6)
 
-### Bundle Sizes (v0.1.0)
+| Import Path | Bundle Size | Minified | Gzipped | Contains |
+|------------|-------------|----------|---------|----------|
+| `secstream/client` | 152.55 KB | 55.25 KB | **15.44 KB** | Client code + shared types |
+| `secstream/server` | 85.4 KB | 28.93 KB | **10.26 KB** | Server code + shared types |
+| `secstream/client/worker` | 38.54 KB | 13.33 KB | **5.72 KB** | Web Worker for decryption |
 
-| Import Path | Bundle Size | Contains |
-|------------|-------------|----------|
-| `secstream/client` | ~69 KB | Client code + shared types |
-| `secstream/server` | ~38 KB | Server code + shared types |
-| `secstream` | ~106 KB | Everything (client + server + shared) |
+**Note**: Gzipped sizes represent actual transfer sizes over the network when served with compression (recommended).
 
 ### Why Separate Imports?
 
@@ -121,20 +119,37 @@ import { NanoidSliceIdGenerator, AesGcmEncryptionProcessor } from 'secstream'
 - **🛡️ Type Safety**: TypeScript prevents importing wrong code
 - **📦 Tree Shaking**: Better dead code elimination
 
-### Migration Guide
+### Package Exports
 
-If you're using the main entry point:
+The package.json exports field defines the available import paths:
 
-```typescript
-// ❌ Avoid this - imports everything
-import { SessionManager, SecureAudioClient } from 'secstream'
-
-// ✅ Better - use specific entry points
-import { SessionManager } from 'secstream/server'
-import { SecureAudioClient } from 'secstream/client'
+```json
+{
+  "exports": {
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "default": "./dist/server/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
+    },
+    "./client/worker": {
+      "import": "./dist/client/decryption-worker.js",
+      "default": "./dist/client/decryption-worker.js"
+    },
+    "./package.json": "./package.json"
+  }
+}
 ```
 
-The main `secstream` entry point is kept for backward compatibility and shared utilities, but prefer specific entry points for optimal bundle sizes.
+This configuration:
+- Prevents importing internal paths like `secstream/dist/...`
+- Enforces a clear separation between client and server code
+- Enables optimal tree-shaking for smaller bundle sizes
+- Provides TypeScript definitions for each entry point
 
 ## 📚 Documentation
 
